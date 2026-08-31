@@ -188,6 +188,13 @@ def build_text_to_video_prompt(prompt: str, negative_prompt: str | None) -> dict
     return result
 
 
+def _validate_video_output_type(output_type: str) -> None:
+    if output_type not in {"image", "video"}:
+        raise ValueError(
+            f"Unexpected output type '{output_type}', expected 'video' or legacy 'image' for video generation."
+        )
+
+
 def _normalize_float_tensor(tensor: torch.Tensor, source_range: str) -> torch.Tensor:
     """Normalize decoded frames according to the pipeline's output contract."""
     if not tensor.is_floating_point():
@@ -672,10 +679,7 @@ def main():
         frames = frames[0] if frames else None
 
     if isinstance(frames, OmniRequestOutput):
-        if frames.final_output_type != "image":
-            raise ValueError(
-                f"Unexpected output type '{frames.final_output_type}', expected 'image' for video generation."
-            )
+        _validate_video_output_type(frames.final_output_type)
         if frames.multimodal_output and "audio" in frames.multimodal_output:
             audio = frames.multimodal_output["audio"]
             audio_sample_rate = frames.multimodal_output.get("audio_sample_rate", audio_sample_rate)
