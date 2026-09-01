@@ -330,3 +330,7 @@ def test_bagel_text2img_mooncake_connector(run_level):
                 os.killpg(os.getpgid(mooncake_master_proc.pid), signal.SIGKILL)
             except OSError:
                 pass
+            try:
+                mooncake_master_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
