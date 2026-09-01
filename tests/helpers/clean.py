@@ -70,6 +70,7 @@ def wait_for_gpu_memory_to_clear(
     assert threshold_bytes is not None or threshold_ratio is not None
     devices = get_physical_device_indices(devices)
     start_time = time.monotonic()
+    deadline = start_time + timeout_s
 
     device_list = ", ".join(str(d) for d in devices)
     if threshold_bytes is not None:
@@ -119,7 +120,9 @@ def wait_for_gpu_memory_to_clear(
 
         gc.collect()
         current_omni_platform.empty_cache()
-        time.sleep(5)
+        remaining_s = deadline - time.monotonic()
+        if remaining_s > 0:
+            time.sleep(min(5, remaining_s))
 
 
 def _run_smi(label: str, cmd: list[str], head_lines: int, timeout: float = 5) -> None:

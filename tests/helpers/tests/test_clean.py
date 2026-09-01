@@ -27,7 +27,8 @@ class _BusyPlatform:
 
 
 def test_memory_clear_timeout_uses_monotonic_clock(monkeypatch: pytest.MonkeyPatch) -> None:
-    monotonic_values = iter([10.0, 10.5, 11.0])
+    monotonic_values = iter([10.0, 10.5, 10.75, 11.0])
+    sleep_calls: list[float] = []
 
     def _unexpected_wall_clock() -> float:
         raise AssertionError("relative timeout consulted the wall clock")
@@ -36,7 +37,7 @@ def test_memory_clear_timeout_uses_monotonic_clock(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(clean, "current_omni_platform", _BusyPlatform())
     monkeypatch.setattr(clean.time, "monotonic", lambda: next(monotonic_values))
     monkeypatch.setattr(clean.time, "time", _unexpected_wall_clock)
-    monkeypatch.setattr(clean.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(clean.time, "sleep", sleep_calls.append)
     monkeypatch.setattr(clean.gc, "collect", lambda: 0)
 
     with pytest.raises(ValueError, match=r"after 1\.0 seconds"):
@@ -45,3 +46,20 @@ def test_memory_clear_timeout_uses_monotonic_clock(monkeypatch: pytest.MonkeyPat
             threshold_ratio=0.5,
             timeout_s=1.0,
         )
+
+    assert sleep_calls == [0.25]
+
+
+def test_memory_clear_success_wins_at_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    platform = _BusyPlatform()
+    monkeypatch.delenv(platform.device_control_env_var, raising=False)
+    monkeypatch.setattr(platform, "mem_get_info", lambda: (2**30, 2**30))
+    monkeypatch.setattr(clean, "current_omni_platform", platform)
+    monkeypatch.setattr(clean.time, "monotonic", lambda: 10.0)
+    monkeypatch.setattr(clean.time, "sleep", lambda _seconds: pytest.fail("unexpected sleep"))
+
+    clean.wait_for_gpu_memory_to_clear(
+        devices=[0],
+        threshold_ratio=0.5,
+        timeout_s=0.0,
+    )
