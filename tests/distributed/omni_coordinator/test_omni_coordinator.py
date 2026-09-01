@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 
 import json
 import threading
@@ -34,8 +34,8 @@ def _wait_for_replica_list(
     timeout: float = 3.0,
 ) -> dict | None:
     """Wait until received ReplicaList with expected_count active replicas."""
-    start = time.time()
-    while time.time() - start < timeout:
+    start = time.monotonic()
+    while time.monotonic() - start < timeout:
         msg = _recv_replica_list(sub, timeout_ms=500)
         if msg is not None and len(msg.get("replicas", [])) == expected_count:
             return msg
@@ -44,8 +44,8 @@ def _wait_for_replica_list(
 
 def _drain_sub_messages(sub: zmq.Socket, max_seconds: float = 0.4) -> None:
     """Drain queued SUB messages for a short window."""
-    deadline = time.time() + max_seconds
-    while time.time() < deadline:
+    deadline = time.monotonic() + max_seconds
+    while time.monotonic() < deadline:
         _recv_replica_list(sub, timeout_ms=50)
 
 
@@ -121,9 +121,9 @@ def test_omni_coordinator_pub_coalescing_on_rapid_queue_updates():
     # With publish_min_interval=0.1s, received messages over ~1s should be
     # much smaller than update_count (coalescing effect).
     window_s = 1.1
-    deadline = time.time() + window_s
+    deadline = time.monotonic() + window_s
     recv_count = 0
-    while time.time() < deadline:
+    while time.monotonic() < deadline:
         if _recv_replica_list(sub, timeout_ms=100) is not None:
             recv_count += 1
 
@@ -189,10 +189,18 @@ def test_omni_coordinator_registration_broadcast():
     sub_ctx.term()
 
 
-def test_omni_coordinator_heartbeat_timeout_handling():
+def test_omni_coordinator_heartbeat_timeout_handling(monkeypatch: pytest.MonkeyPatch):
     """Verify that when a stage replica stops sending heartbeats,
     OmniCoordinator marks it as unhealthy and excludes it from the active list.
     """
+    original_heartbeat_loop = OmniCoordClientForStage._heartbeat_loop
+
+    def _fast_heartbeat_loop(client: OmniCoordClientForStage) -> None:
+        client._heartbeat_interval = 0.2
+        original_heartbeat_loop(client)
+
+    monkeypatch.setattr(OmniCoordClientForStage, "_heartbeat_loop", _fast_heartbeat_loop)
+
     router_addr = get_engine_client_zmq_addr(
         local_only=False,
         host="127.0.0.1",
@@ -206,7 +214,7 @@ def test_omni_coordinator_heartbeat_timeout_handling():
     coordinator = OmniCoordinator(
         router_zmq_addr=router_addr,
         pub_zmq_addr=pub_addr,
-        heartbeat_timeout=5.0,
+        heartbeat_timeout=1.0,
     )
 
     sub_ctx = zmq.Context.instance()
@@ -216,7 +224,7 @@ def test_omni_coordinator_heartbeat_timeout_handling():
 
     time.sleep(0.3)
 
-    # A and B: real clients that send heartbeats every 5s.
+    # A and B: real clients that send heartbeats every 0.2s.
     client_a = OmniCoordClientForStage(coordinator.router_zmq_addr, "tcp://stage:a", "tcp://stage:a-out", 0)
     client_b = OmniCoordClientForStage(coordinator.router_zmq_addr, "tcp://stage:b", "tcp://stage:b-out", 0)
 
@@ -238,9 +246,6 @@ def test_omni_coordinator_heartbeat_timeout_handling():
     assert msg is not None, "Expected initial 3 replicas"
     assert len(msg["replicas"]) == 3
 
-    # Wait for heartbeat timeout (timeout=5s, check interval ~2.5s).
-    time.sleep(8.0)
-
     # Receive the update (C should be ERROR and excluded from active list).
     msg_after_timeout = _wait_for_replica_list(sub, expected_count=2, timeout=5.0)
     assert msg_after_timeout is not None, "Expected ReplicaList with 2 replicas after timeout"
@@ -250,6 +255,8 @@ def test_omni_coordinator_heartbeat_timeout_handling():
     assert "tcp://stage:a" in input_addrs
     assert "tcp://stage:b" in input_addrs
     assert "tcp://stage:c" not in input_addrs
+    with coordinator._lock:
+        assert coordinator._replicas["tcp://stage:c"].status == ReplicaStatus.ERROR
 
     client_a.close()
     client_b.close()
