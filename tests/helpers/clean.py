@@ -69,7 +69,7 @@ def wait_for_gpu_memory_to_clear(
 ) -> None:
     assert threshold_bytes is not None or threshold_ratio is not None
     devices = get_physical_device_indices(devices)
-    start_time = time.time()
+    start_time = time.monotonic()
 
     device_list = ", ".join(str(d) for d in devices)
     if threshold_bytes is not None:
@@ -103,7 +103,7 @@ def wait_for_gpu_memory_to_clear(
         for device_id, mem_info in output.items():
             print(f"  Device {device_id}: {mem_info}")
 
-        dur_s = time.time() - start_time
+        dur_s = time.monotonic() - start_time
         if all(is_free(used, total) for used, total in output_raw.values()):
             print(f"[Device Memory Freed] Device(s) {device_list} meet memory condition")
             print(f"   Condition: {condition_str}")
