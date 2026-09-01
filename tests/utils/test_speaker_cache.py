@@ -127,11 +127,12 @@ class TestSpeakerEmbeddingCacheBehavior:
             except Exception as e:
                 errors.append(e)
 
-        threads = [threading.Thread(target=worker, args=(t,)) for t in range(10)]
+        threads = [threading.Thread(target=worker, args=(t,), daemon=True) for t in range(10)]
         for t in threads:
             t.start()
         for t in threads:
-            t.join()
+            t.join(timeout=5)
+            assert not t.is_alive(), f"speaker cache worker {t.name} did not finish within 5 seconds"
         assert not errors
         assert cache.stats()["entries"] == 500
 

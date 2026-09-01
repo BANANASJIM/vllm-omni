@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 
 """
 Unit tests for prompt-embedding cache for diffusion pipelines.
@@ -224,11 +224,12 @@ class TestPromptEmbedCache:
                 cache.put(f"k{i}", i)
                 cache.get(f"k{i}")
 
-        threads = [threading.Thread(target=worker, args=(i * 200,)) for i in range(4)]
+        threads = [threading.Thread(target=worker, args=(i * 200,), daemon=True) for i in range(4)]
         for t in threads:
             t.start()
         for t in threads:
-            t.join()
+            t.join(timeout=5)
+            assert not t.is_alive(), f"prompt-embed cache worker {t.name} did not finish within 5 seconds"
 
         stats = cache.stats()
         # 4 * 200 = 800 writes, each followed by a successful read.
