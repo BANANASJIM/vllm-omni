@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
+
 import base64
 import io
 import logging
@@ -33,7 +36,7 @@ def process_audio(audio: Any) -> Mapping[str, Any]:
         audio_base64 = base64.b64encode(audio_bytes).decode("utf-8")
         return {
             "type": "audio_url",
-            "audio_url": {"url": f"data:audio/mpeg;base64,{audio_base64}"},
+            "audio_url": {"url": f"data:audio/wav;base64,{audio_base64}"},
         }
     if isinstance(audio, str):
         audio_url = audio if audio.startswith(("http://", "https://", "file://")) else f"file://{audio}"
