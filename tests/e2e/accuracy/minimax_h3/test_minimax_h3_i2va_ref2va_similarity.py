@@ -183,6 +183,7 @@ def _probe_audio(path: Path) -> dict[str, str | int]:
         ],
         capture_output=True,
         text=True,
+        timeout=30,
         check=True,
     )
     streams = json.loads(result.stdout).get("streams", [])
