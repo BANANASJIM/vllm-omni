@@ -5,8 +5,8 @@
 
 from __future__ import annotations
 
+import math
 import threading
-import time
 
 from vllm_omni.platforms import current_omni_platform
 
@@ -15,11 +15,13 @@ class DeviceMemoryMonitor:
     """Poll global device memory usage."""
 
     def __init__(self, device_index: int, interval: float = 0.05):
+        self._thread: threading.Thread | None = None
+        if not math.isfinite(interval) or interval <= 0:
+            raise ValueError("interval must be a positive finite number")
         self.device_index = device_index
         self.interval = interval
         self._peak_used_mb = 0.0
         self._stop_event = threading.Event()
-        self._thread: threading.Thread | None = None
 
     def start(self) -> None:
         def monitor_loop() -> None:
@@ -31,7 +33,8 @@ class DeviceMemoryMonitor:
                     self._peak_used_mb = max(self._peak_used_mb, used_mb)
                 except Exception:
                     pass
-                time.sleep(self.interval)
+                if self._stop_event.wait(self.interval):
+                    break
 
         self._thread = threading.Thread(target=monitor_loop, daemon=False)
         self._thread.start()
