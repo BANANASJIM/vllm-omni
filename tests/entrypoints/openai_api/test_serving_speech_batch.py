@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 """
 E2E tests for the /v1/audio/speech/batch endpoint.
 
@@ -336,7 +336,7 @@ class TestSpeechBatchSize2:
     @pytest.mark.tts
     @hardware_test(res={"cuda": "L4"}, num_cards=1)
     @pytest.mark.parametrize("omni_server", batch2_server_params, indirect=True)
-    def test_batch2_produces_valid_audio(self, omni_server) -> None:
+    def test_batch2_produces_valid_audio(self, omni_server, tmp_path: Path) -> None:
         """Batch of 2 items with batched engine produces valid audio."""
         items = [
             {"input": "Hello, this is the first sentence."},
@@ -356,7 +356,7 @@ class TestSpeechBatchSize2:
         assert data["failed"] == 0
 
         # Save audio files for inspection
-        output_dir = Path(tempfile.mkdtemp(prefix="tts_batch2_output_"))
+        output_dir = tmp_path
         for result in data["results"]:
             assert result["status"] == "success"
             audio_bytes = base64.b64decode(result["audio_data"])
