@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 
 """E2E online serving test for π0 (Pi-Zero) OpenPI websocket serving.
 
@@ -37,7 +37,6 @@ MODEL = "lerobot/pi0_base"
 test_params = [
     OmniServerParams(
         model=MODEL,
-        port=8092,
         server_args=[
             "--deploy-config",
             "vllm_omni/deploy/pi0.yaml",
