@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 """Stage input processor for MammothModa2 (AR -> DiT)."""
 
 from collections.abc import Mapping
@@ -82,9 +84,13 @@ def ar2dit(
             )
         full_hidden_states = mm_output["latent"]
         hidden_total = int(full_hidden_states.shape[0])
-        assert hidden_total == len(prompt_token_ids) + len(gen_token_ids), (
-            f"Hidden states length mismatch: expected {len(prompt_token_ids) + len(gen_token_ids)}, got {hidden_total}"
-        )
+        expected_total = len(prompt_token_ids) + len(gen_token_ids)
+        if hidden_total != expected_total:
+            raise RuntimeError(
+                "AR stage hidden states length mismatch: "
+                f"request_id={getattr(ar_output, 'request_id', None)}, "
+                f"expected={expected_total}, got={hidden_total}"
+            )
 
         # The text/image condition split is performed in the DiT pipeline, which sources
         # the distinguishing token ids (gen_vocab_start_index, vision placeholder ids)
