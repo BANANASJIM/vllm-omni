@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 """Tests for the NVFP4 W4A4 weight_scale NaN clamp installed by
 ``vllm_omni.patch``.
 
@@ -199,6 +199,9 @@ def test_reload_does_not_nest_wrapper():
         """
     )
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, (
+        f"subprocess failed with exit code {result.returncode}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
     if result.stdout.strip().startswith("SKIP:"):
         pytest.skip(result.stdout.strip())
     assert "FLAT" in result.stdout, (
@@ -268,6 +271,9 @@ def test_env_var_escape_hatch_disables_install(env_value, acceptable):
     # 120s rather than 60s: cold CI containers can take 30-50s just to
     # import vllm_omni → vllm → torch before the subprocess does any work.
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120, env=env)
+    assert result.returncode == 0, (
+        f"subprocess failed with exit code {result.returncode}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
     if result.stdout.strip().startswith("SKIP:"):
         pytest.skip("modelopt not available in subprocess")
     # Exact token match on the final stdout line — not a substring test, since
