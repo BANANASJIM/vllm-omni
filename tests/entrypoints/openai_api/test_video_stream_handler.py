@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 """Runtime behavior tests for VideoStreamHandler.
 
 Every test creates a mock WebSocket, drives handle_session through a
@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock
 import pytest
 from PIL import Image
 
+import vllm_omni.entrypoints.openai.video_stream_session as video_stream_session
 from vllm_omni.entrypoints.openai.video_stream_session import (
     VideoStreamHandler,
 )
@@ -439,12 +440,19 @@ class TestReaderErrors:
         assert "session.done" in ws.sent_types()
 
     @pytest.mark.asyncio
-    async def test_invalid_base64_frame(self):
-        """Invalid base64 in video.frame → error, continues."""
+    @pytest.mark.parametrize(
+        ("message_type", "error_message"),
+        [
+            ("video.frame", "Invalid base64 in video.frame"),
+            ("audio.chunk", "Invalid base64 in audio.chunk"),
+        ],
+    )
+    async def test_invalid_base64_media(self, message_type, error_message):
+        """Invalid base64 media → error, continues."""
         ws = MockWebSocket(
             [
                 _config_msg(),
-                json.dumps({"type": "video.frame", "data": "!!!not-base64!!!"}),
+                json.dumps({"type": message_type, "data": "%%%%"}),
                 _done_msg(),
             ]
         )
@@ -452,7 +460,53 @@ class TestReaderErrors:
         await handler.handle_session(ws)
 
         errors = [m for m in ws.sent_messages if m["type"] == "error"]
-        assert any("Invalid base64" in e["message"] for e in errors)
+        assert [error["message"] for error in errors] == [error_message]
+        assert "session.done" in ws.sent_types()
+
+    @pytest.mark.asyncio
+    async def test_oversized_frame_rejected_before_base64_decode(self, monkeypatch):
+        """Oversized encoded frames are rejected without decoding."""
+        monkeypatch.setattr(video_stream_session, "_MAX_FRAME_BYTES", 3)
+        monkeypatch.setattr(video_stream_session, "_MAX_FRAME_BASE64_CHARS", 4)
+        ws = MockWebSocket(
+            [
+                _config_msg(),
+                json.dumps({"type": "video.frame", "data": "AAAAA"}),
+                _done_msg(),
+            ]
+        )
+        decode_calls = 0
+
+        def fail_decode(*args, **kwargs):
+            nonlocal decode_calls
+            decode_calls += 1
+            raise AssertionError("oversized frame reached base64 decoder")
+
+        monkeypatch.setattr(video_stream_session.base64, "b64decode", fail_decode)
+        handler = VideoStreamHandler(chat_handler=MockChatHandler(), idle_timeout=2.0)
+        await handler.handle_session(ws)
+
+        errors = [m for m in ws.sent_messages if m["type"] == "error"]
+        assert decode_calls == 0
+        assert len(errors) == 1
+        assert "Frame too large" in errors[0]["message"]
+        assert "session.done" in ws.sent_types()
+
+    @pytest.mark.asyncio
+    async def test_valid_base64_frame_and_audio(self):
+        """Valid base64 frame and audio payloads remain accepted."""
+        ws = MockWebSocket(
+            [
+                _config_msg(),
+                _frame_msg(),
+                _audio_msg(),
+                _done_msg(),
+            ]
+        )
+        handler = VideoStreamHandler(chat_handler=MockChatHandler(), idle_timeout=2.0)
+        await handler.handle_session(ws)
+
+        assert "error" not in ws.sent_types()
         assert "session.done" in ws.sent_types()
 
 

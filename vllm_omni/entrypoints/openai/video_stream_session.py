@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 """Video streaming session manager and WebSocket handler.
 
 Provides ``VideoStreamConfig``, ``VideoStreamSession`` (frame/audio buffer
@@ -30,6 +30,7 @@ logger = init_logger(__name__)
 _DEFAULT_IDLE_TIMEOUT = 60.0
 _DEFAULT_CONFIG_TIMEOUT = 10.0
 _MAX_FRAME_BYTES = 10 * 1024 * 1024  # 10 MB per frame
+_MAX_FRAME_BASE64_CHARS = 4 * ((_MAX_FRAME_BYTES + 2) // 3)
 
 
 class VideoStreamConfig:
@@ -273,8 +274,14 @@ class VideoStreamHandler:
 
                     if msg_type == "video.frame":
                         data_b64 = msg.get("data", "")
+                        if isinstance(data_b64, (str, bytes, bytearray)) and len(data_b64) > _MAX_FRAME_BASE64_CHARS:
+                            await self._send_error(
+                                websocket,
+                                f"Frame too large: encoded payload exceeds the {_MAX_FRAME_BYTES} byte limit",
+                            )
+                            continue
                         try:
-                            jpeg_bytes = base64.b64decode(data_b64)
+                            jpeg_bytes = base64.b64decode(data_b64, validate=True)
                         except Exception:
                             await self._send_error(websocket, "Invalid base64 in video.frame")
                             continue
@@ -287,7 +294,7 @@ class VideoStreamHandler:
                     elif msg_type == "audio.chunk":
                         data_b64 = msg.get("data", "")
                         try:
-                            pcm_bytes = base64.b64decode(data_b64)
+                            pcm_bytes = base64.b64decode(data_b64, validate=True)
                         except Exception:
                             await self._send_error(websocket, "Invalid base64 in audio.chunk")
                             continue
