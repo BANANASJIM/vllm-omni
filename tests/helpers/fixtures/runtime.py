@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 if TYPE_CHECKING:
+    from tests.helpers.client import OnlineOmniClient
     from tests.helpers.runtime import OmniRunner, OmniServer
 
 omni_fixture_lock = threading.Lock()
@@ -60,18 +61,22 @@ def omni_server(request: pytest.FixtureRequest, run_level: str) -> Generator[Omn
 
 
 @pytest.fixture
-def online_client(request: pytest.FixtureRequest, run_level: str):
+def online_client(request: pytest.FixtureRequest, run_level: str) -> Generator[OnlineOmniClient, None, None]:
     """Resolve ``omni_server`` lazily so parametrized server fixtures work like upstream."""
     from tests.helpers.client import OnlineOmniClient
 
     server = request.getfixturevalue("omni_server")
-    return OnlineOmniClient(
+    client = OnlineOmniClient(
         host=server.host,
         port=server.port,
         api_key="EMPTY",
         run_level=run_level,
         log_stats=server.log_stats,
     )
+    try:
+        yield client
+    finally:
+        client.client.close()
 
 
 @pytest.fixture
@@ -81,18 +86,22 @@ def openai_client(online_client):
 
 
 @pytest.fixture
-def online_client_function(request: pytest.FixtureRequest, run_level: str):
+def online_client_function(request: pytest.FixtureRequest, run_level: str) -> Generator[OnlineOmniClient, None, None]:
     """Resolve ``omni_server_function`` lazily for function-scoped reliability tests."""
     from tests.helpers.client import OnlineOmniClient
 
     server = request.getfixturevalue("omni_server_function")
-    return OnlineOmniClient(
+    client = OnlineOmniClient(
         host=server.host,
         port=server.port,
         api_key="EMPTY",
         run_level=run_level,
         log_stats=server.log_stats,
     )
+    try:
+        yield client
+    finally:
+        client.client.close()
 
 
 @pytest.fixture
