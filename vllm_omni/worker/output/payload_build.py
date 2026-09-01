@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 """Per-request multimodal payload builders.
 
 State-free extraction helpers that turn a step's `multimodal_outputs`
@@ -149,6 +149,23 @@ def build_omni_mm_payload(
                 continue
             sparse_val = mm_val[sparse_idx]
             mm_payload[mm_key] = sparse_val.clone() if isinstance(sparse_val, torch.Tensor) else sparse_val
+            continue
+        if isinstance(mm_val, list):
+            if len(mm_val) == 1:
+                dense_val = mm_val[0]
+            elif idx < len(mm_val):
+                dense_val = mm_val[idx]
+            else:
+                logger.error(
+                    "Dense multimodal payload mismatch for request %s: index %d out of range "
+                    "for per-request list of length %d; dropping key %s.",
+                    rid,
+                    idx,
+                    len(mm_val),
+                    mm_key,
+                )
+                continue
+            mm_payload[mm_key] = dense_val.clone() if isinstance(dense_val, torch.Tensor) else dense_val
             continue
         mm_payload[mm_key] = to_payload_element(
             element=mm_val,
