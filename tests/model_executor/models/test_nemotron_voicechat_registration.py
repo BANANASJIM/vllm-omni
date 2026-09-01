@@ -115,5 +115,9 @@ def test_no_nemo_imports_in_nemotron_voicechat_tree() -> None:
         ["grep", "-rnE", r"^\s*(import nemo\b|from nemo(\.|\s))", *targets, "--include=*.py"],
         capture_output=True,
         text=True,
+        timeout=10,
     )
-    assert result.returncode != 0, f"Found nemo imports in the nemotron_voicechat tree:\n{result.stdout}"
+    assert result.returncode == 1, (
+        f"Expected no nemo imports (grep exit 1), got {result.returncode}:\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
