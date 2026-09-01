@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 
 """Equivalence test for DreamZero self-attn QKV fusion.
 
@@ -15,7 +15,7 @@ the GEMM dispatcher is forced to the default (CPU-compatible) path, following
 tests/diffusion/layers/test_adalayernorm.py.
 """
 
-import os
+from pathlib import Path
 
 import pytest
 import torch
@@ -24,7 +24,7 @@ pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
 
 
 @pytest.fixture(autouse=True)
-def _init_distributed():
+def _init_distributed(tmp_path: Path):
     """Minimal world_size=1 TP group required to build QKVParallelLinear."""
     from vllm.distributed.parallel_state import (
         cleanup_dist_env_and_memory,
@@ -32,13 +32,12 @@ def _init_distributed():
         initialize_model_parallel,
     )
 
-    os.environ.setdefault("MASTER_ADDR", "localhost")
-    os.environ.setdefault("MASTER_PORT", "29507")
     init_distributed_environment(
         world_size=1,
         rank=0,
         local_rank=0,
-        distributed_init_method="env://",
+        backend="gloo",
+        distributed_init_method=f"file://{tmp_path / 'torch_dist_init'}",
     )
     initialize_model_parallel()
     yield
