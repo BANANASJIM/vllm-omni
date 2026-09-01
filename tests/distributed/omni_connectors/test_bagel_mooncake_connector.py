@@ -177,12 +177,19 @@ def _wait_for_port(host: str, port: int, timeout: int = 30) -> bool:
     Returns:
         True if port becomes available, False otherwise.
     """
-    for _ in range(timeout):
+    if timeout <= 0:
+        return False
+
+    deadline = time.monotonic() + timeout
+    while (remaining := deadline - time.monotonic()) > 0:
         try:
-            with socket.create_connection((host, port), timeout=1):
+            with socket.create_connection((host, port), timeout=min(1, remaining)):
                 return True
         except (TimeoutError, ConnectionRefusedError):
-            time.sleep(1)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(1, remaining))
     return False
 
 
