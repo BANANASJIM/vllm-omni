@@ -239,6 +239,7 @@ def test_process_title_is_visible_through_ps() -> None:
                 check=False,
                 capture_output=True,
                 text=True,
+                timeout=5,
             )
             observed_title = result.stdout.strip()
             if expected_name in observed_title:
