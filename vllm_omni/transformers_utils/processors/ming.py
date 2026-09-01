@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 # Copyright 2025 The vLLM-Omni team.
 # Copyright 2024 ANT Group and the HuggingFace Inc. team.
 #
@@ -210,7 +211,8 @@ class MingFlashOmniProcessor(ProcessorMixin):
         self.video_processor = video_processor
 
         # Fall back to the tokenizer's own chat_template.
-        if self.chat_template is None:
+        chat_template = getattr(self, "chat_template", None)
+        if chat_template is None:
             self.chat_template = getattr(tokenizer, "chat_template", None)
 
     @classmethod
@@ -394,11 +396,10 @@ class MingFlashOmniProcessor(ProcessorMixin):
         text = self.apply_system_template(sys_prompt_exp, use_cot_system_prompt) + eos
 
         for idx, message in enumerate(conversation):
-            assert message["role"] in ["HUMAN", "ASSISTANT"], (
-                f"Invalid role: {message['role']}. Must be 'HUMAN' or 'ASSISTANT'"
-            )
-            if idx == len(conversation) - 1:
-                assert message["role"] == "HUMAN", "Last message must be from HUMAN"
+            if message["role"] not in ["HUMAN", "ASSISTANT"]:
+                raise ValueError(f"Invalid role: {message['role']}. Must be 'HUMAN' or 'ASSISTANT'")
+            if idx == len(conversation) - 1 and message["role"] != "HUMAN":
+                raise ValueError("Last message must be from HUMAN")
 
             text += USER_PREFIX if message["role"] == "HUMAN" else ASSISTANT_PREFIX
 
