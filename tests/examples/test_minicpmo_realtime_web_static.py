@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
+
 import re
 import shutil
 import subprocess
@@ -9,6 +12,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2] / "examples" / "online_serving" / "minicpmo" / "realtime_web"
 APP_ROOT = ROOT / "app"
 STATIC_ROOT = APP_ROOT / "static"
+NODE_SUBPROCESS_TIMEOUT_SECONDS = 10
 
 pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
 
@@ -135,6 +139,7 @@ def test_playback_worklet_waits_before_playing_and_rebuffers_after_underrun():
     node = shutil.which("node")
     if node is None:
         pytest.skip("node is required for the AudioWorklet regression test")
+    assert node is not None
 
     script = textwrap.dedent(
         """
@@ -206,6 +211,7 @@ def test_playback_worklet_waits_before_playing_and_rebuffers_after_underrun():
         check=True,
         capture_output=True,
         text=True,
+        timeout=NODE_SUBPROCESS_TIMEOUT_SECONDS,
     )
 
 
@@ -213,6 +219,7 @@ def test_playback_worklet_fades_terminal_drain_to_zero():
     node = shutil.which("node")
     if node is None:
         pytest.skip("node is required for the AudioWorklet regression test")
+    assert node is not None
 
     script = textwrap.dedent(
         """
@@ -271,4 +278,5 @@ def test_playback_worklet_fades_terminal_drain_to_zero():
         check=True,
         capture_output=True,
         text=True,
+        timeout=NODE_SUBPROCESS_TIMEOUT_SECONDS,
     )
