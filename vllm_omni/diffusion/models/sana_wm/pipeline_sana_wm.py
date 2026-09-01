@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 """Sana-WM pipeline integration.
 
 This module wires the registry-visible surface, release-layout validation, and
@@ -349,7 +349,7 @@ class SanaWmPipeline(
             raise ValueError("Sana-WM native height, width, num_frames, and steps must be positive.")
         cfg_scale = SANA_WM_DEFAULT_GUIDANCE_SCALE
         if sampling_params is not None and getattr(sampling_params, "guidance_scale_provided", False):
-            cfg_scale = float(getattr(sampling_params, "guidance_scale", 1.0) or 1.0)
+            cfg_scale = float(getattr(sampling_params, "guidance_scale", 1.0))
         return SanaWmNativeParams(
             height=height,
             width=width,

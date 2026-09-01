@@ -1,9 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 """Unit tests for SANA-WM request normalization."""
+
+from types import SimpleNamespace
 
 import pytest
 
+from vllm_omni.diffusion.models.sana_wm.pipeline_sana_wm import (
+    SANA_WM_DEFAULT_GUIDANCE_SCALE,
+    SanaWmPipeline,
+)
 from vllm_omni.diffusion.models.sana_wm.request import (
     SANA_WM_DEFAULT_HEIGHT,
     SANA_WM_DEFAULT_NUM_FRAMES,
@@ -41,6 +47,27 @@ def test_defaults_are_latent_aligned():
     assert payload["num_frames"] == SANA_WM_DEFAULT_NUM_FRAMES
     assert payload["height"] == SANA_WM_DEFAULT_HEIGHT
     assert payload["width"] == SANA_WM_DEFAULT_WIDTH
+
+
+@pytest.mark.parametrize(
+    ("sampling_params", "expected"),
+    [
+        (None, SANA_WM_DEFAULT_GUIDANCE_SCALE),
+        (SimpleNamespace(guidance_scale=None, guidance_scale_provided=False), SANA_WM_DEFAULT_GUIDANCE_SCALE),
+        (SimpleNamespace(guidance_scale=0.0, guidance_scale_provided=True), 0.0),
+        (SimpleNamespace(guidance_scale=2.5, guidance_scale_provided=True), 2.5),
+    ],
+)
+def test_native_params_preserves_explicit_guidance_scale(sampling_params, expected):
+    payload = {
+        "height": SANA_WM_DEFAULT_HEIGHT,
+        "width": SANA_WM_DEFAULT_WIDTH,
+        "num_frames": SANA_WM_DEFAULT_NUM_FRAMES,
+    }
+
+    params = SanaWmPipeline.__new__(SanaWmPipeline)._native_params(payload, sampling_params)
+
+    assert params.cfg_scale == expected
 
 
 @pytest.mark.parametrize("num_frames", [9, 33, 161])
