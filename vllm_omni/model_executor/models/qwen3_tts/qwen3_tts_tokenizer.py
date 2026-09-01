@@ -1,5 +1,6 @@
 # Copyright 2026 The Alibaba Qwen team.
 # SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,7 +15,6 @@
 # limitations under the License.
 import base64
 import io
-import urllib.request
 from urllib.parse import urlparse
 
 import numpy as np
@@ -146,10 +146,10 @@ class Qwen3TTSTokenizer:
                 1-D float32 waveform at target_sr.
         """
         if self._is_url(x):
-            with urllib.request.urlopen(x) as resp:
-                audio_bytes = resp.read()
-            with io.BytesIO(audio_bytes) as f:
-                audio, sr = sf.read(f, dtype="float32", always_2d=False)
+            from vllm.multimodal.media import MediaConnector
+
+            connector = MediaConnector()
+            audio, sr = connector.fetch_audio(x)
         elif self._is_probably_base64(x):
             wav_bytes = self._decode_base64_to_wav_bytes(x)
             with io.BytesIO(wav_bytes) as f:
