@@ -51,6 +51,6 @@ def bootstrap_vllm_layer_custom_op_modules() -> None:
     for name in _VLLM_PREIMPORT_MODULES:
         try:
             importlib.import_module(name)
-        except Exception:
+        except ModuleNotFoundError:
             # Allow CPU-only or minimal vLLM dev installs: skip if a module is absent.
             pass
