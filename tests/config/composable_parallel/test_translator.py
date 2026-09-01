@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 """Tests for StrategySpec -> OmniParallelConfig translation."""
 
 from __future__ import annotations
@@ -104,9 +104,8 @@ def test_ep_must_match_tp_dp_product():
 
 
 def test_ep_mismatch_raises():
-    with pytest.raises(Exception) as exc:
+    with pytest.raises(AxisTranslationError, match="must equal"):
         translate_strategy_stack([_tp(2), _ep(4)])
-    assert "must equal" in str(exc.value)
 
 
 def test_duplicate_kind_rejected():
