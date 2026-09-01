@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 """Event-driven orchestration loop (``VLLM_OMNI_EVENT_DRIVEN_ORCH=1``) tests.
 
 Parity suite: re-runs the legacy orchestration scenarios from
@@ -63,8 +63,10 @@ def orchestrator_factory(monkeypatch):
         if fixture.thread.is_alive():
             fixture.request_sync_q.put_nowait(ShutdownRequestMessage())
             fixture.thread.join(timeout=5)
+        thread_is_alive = fixture.thread.is_alive()
         for q in fixture.queues:
             q.close()
+        assert not thread_is_alive, "Timed out waiting for orchestrator thread shutdown"
 
 
 # ---------------------------------------------------------------------------
@@ -134,8 +136,10 @@ def test_default_is_legacy_loop(monkeypatch) -> None:
     finally:
         fixture.request_sync_q.put_nowait(ShutdownRequestMessage())
         fixture.thread.join(timeout=5)
+        thread_is_alive = fixture.thread.is_alive()
         for q in fixture.queues:
             q.close()
+    assert not thread_is_alive, "Timed out waiting for orchestrator thread shutdown"
 
 
 @pytest.mark.asyncio
