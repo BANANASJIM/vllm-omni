@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 
 import json
 import time
+from collections.abc import Callable
 
 import pytest
 import zmq
@@ -23,13 +24,24 @@ def _bind_pub() -> tuple[zmq.Context, zmq.Socket, str]:
     return ctx, pub, endpoint
 
 
-def _wait_for_condition(cond, timeout: float = 2.0, interval: float = 0.01) -> bool:
-    start = time.time()
-    while time.time() - start < timeout:
+def _publish_until(
+    pub,
+    payload: object,
+    cond: Callable[[], bool],
+    timeout: float = 2.0,
+    interval: float = 0.01,
+) -> bool:
+    """Retry a PUB message until the subscriber observes it or time runs out."""
+    message = json.dumps(payload).encode("utf-8")
+    deadline = time.monotonic() + timeout
+    while True:
+        pub.send(message)
         if cond():
             return True
-        time.sleep(interval)
-    return False
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return cond()
+        time.sleep(min(interval, remaining))
 
 
 def test_hub_client_caches_replica_list_from_pub():
@@ -37,8 +49,6 @@ def test_hub_client_caches_replica_list_from_pub():
     ctx, pub, endpoint = _bind_pub()
 
     client = OmniCoordClientForHub(endpoint)
-    # ZMQ PUB/SUB slow-joiner: allow SUB to finish connecting before first send
-    time.sleep(0.2)
 
     now = time.time()
     replicas_payload = [
@@ -72,9 +82,7 @@ def test_hub_client_caches_replica_list_from_pub():
     ]
 
     payload = {"replicas": replicas_payload, "timestamp": now}
-    pub.send(json.dumps(payload).encode("utf-8"))
-
-    assert _wait_for_condition(lambda: len(client.get_replica_list().replicas) == 3)
+    assert _publish_until(pub, payload, lambda: len(client.get_replica_list().replicas) == 3)
 
     rep_list = client.get_replica_list()
     assert isinstance(rep_list, ReplicaList)
@@ -97,9 +105,7 @@ def test_hub_client_caches_replica_list_from_pub():
         "replicas": replicas_payload[:2],
         "timestamp": now + 1.0,
     }
-    pub.send(json.dumps(updated_payload).encode("utf-8"))
-
-    assert _wait_for_condition(lambda: len(client.get_replica_list().replicas) == 2)
+    assert _publish_until(pub, updated_payload, lambda: len(client.get_replica_list().replicas) == 2)
     updated_list = client.get_replica_list()
     assert len(updated_list.replicas) == 2
 
