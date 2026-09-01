@@ -190,7 +190,7 @@ def test_payload_fsync_overlaps_producer_work(
         finally:
             closed.set()
 
-    close_thread = threading.Thread(target=close_output)
+    close_thread = threading.Thread(target=close_output, daemon=True)
     close_thread.start()
     try:
         assert started.wait(timeout=2)
@@ -198,6 +198,7 @@ def test_payload_fsync_overlaps_producer_work(
     finally:
         release.set()
         close_thread.join(timeout=5)
+    assert not close_thread.is_alive(), "payload close thread did not stop after fsync was released"
 
     assert not close_errors
     writer.finalize(_identity(), ProductionMetadata("test-producer-v1", "test-restorer-v1"))
