@@ -29,7 +29,6 @@ from tests.helpers.runtime import (
 )
 
 os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
-os.environ["VLLM_TEST_CLEAN_GPU_MEMORY"] = "0"
 
 MODEL = "lerobot/pi0_base"
 
