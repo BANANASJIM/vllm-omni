@@ -3,7 +3,8 @@
 
 import json
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 
 import pytest
 import zmq
@@ -16,12 +17,33 @@ from vllm_omni.distributed.omni_coordinator import (
 pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
 
 
-def _bind_pub() -> tuple[zmq.Context, zmq.Socket, str]:
-    ctx = zmq.Context.instance()
-    pub = ctx.socket(zmq.PUB)
-    pub.bind("tcp://127.0.0.1:*")
-    endpoint = pub.getsockopt(zmq.LAST_ENDPOINT).decode("ascii")
-    return ctx, pub, endpoint
+@contextmanager
+def _hub_client_resources() -> Iterator[tuple[zmq.Socket, OmniCoordClientForHub]]:
+    ctx = zmq.Context()
+    pub = None
+    client = None
+    try:
+        pub = ctx.socket(zmq.PUB)
+        pub.bind("tcp://127.0.0.1:*")
+        endpoint = pub.getsockopt(zmq.LAST_ENDPOINT).decode("ascii")
+        client = OmniCoordClientForHub(endpoint)
+        yield pub, client
+    finally:
+        try:
+            if client is not None and not client._closed:
+                client.close()
+        finally:
+            try:
+                if pub is not None:
+                    pub.close(0)
+            finally:
+                ctx.term()
+
+
+@pytest.fixture
+def hub_client_resources() -> Iterator[tuple[zmq.Socket, OmniCoordClientForHub]]:
+    with _hub_client_resources() as resources:
+        yield resources
 
 
 def _publish_until(
@@ -44,11 +66,9 @@ def _publish_until(
         time.sleep(min(interval, remaining))
 
 
-def test_hub_client_caches_replica_list_from_pub():
+def test_hub_client_caches_replica_list_from_pub(hub_client_resources):
     """Verify OmniCoordClientForHub receives replica list updates from OmniCoordinator and caches for get_replica_list()."""
-    ctx, pub, endpoint = _bind_pub()
-
-    client = OmniCoordClientForHub(endpoint)
+    pub, client = hub_client_resources
 
     now = time.time()
     replicas_payload = [
@@ -109,19 +129,32 @@ def test_hub_client_caches_replica_list_from_pub():
     updated_list = client.get_replica_list()
     assert len(updated_list.replicas) == 2
 
-    client.close()
-    pub.close(0)
-    ctx.term()
 
-
-def test_hub_client_close_closes_sub_socket():
+def test_hub_client_close_closes_sub_socket(hub_client_resources):
     """Verify OmniCoordClientForHub.close() marks client as closed; second close raises."""
-    ctx, pub, endpoint = _bind_pub()
-    client = OmniCoordClientForHub(endpoint)
+    _, client = hub_client_resources
     client.close()
 
     with pytest.raises(RuntimeError, match="already closed"):
         client.close()
 
-    pub.close(0)
-    ctx.term()
+
+def test_hub_resources_close_when_assertion_fails():
+    pub: zmq.Socket
+    client: OmniCoordClientForHub
+    singleton_ctx = zmq.Context.instance()
+
+    with pytest.raises(AssertionError), _hub_client_resources() as (pub, client):
+        assert False
+
+    assert pub.closed
+    assert client._ctx.closed
+    assert not client._thread.is_alive()
+    assert zmq.Context.instance() is singleton_ctx
+    assert not singleton_ctx.closed
+
+    sentinel = singleton_ctx.socket(zmq.PAIR)
+    try:
+        assert sentinel.getsockopt(zmq.TYPE) == zmq.PAIR
+    finally:
+        sentinel.close(0)
