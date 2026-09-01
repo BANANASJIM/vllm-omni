@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 """Unit tests for GLM-Image AR model: DataParser, processor, and M-RoPE."""
 
 import importlib.util
@@ -33,6 +33,7 @@ _BASE = os.path.join(
 def _load_module(name: str, filename: str):
     path = os.path.abspath(os.path.join(_BASE, filename))
     spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -43,12 +44,12 @@ def _build_mock_modules() -> dict[str, object]:
     # Stub transformers.models.glm_image submodules
     glm_image_mod = types.ModuleType("transformers.models.glm_image")
     glm_config_mod = types.ModuleType("transformers.models.glm_image.configuration_glm_image")
-    glm_config_mod.GlmImageConfig = type("GlmImageConfig", (), {})
-    glm_config_mod.GlmImageTextConfig = type("GlmImageTextConfig", (), {})
-    glm_config_mod.GlmImageVisionConfig = type("GlmImageVisionConfig", (), {})
-    glm_config_mod.GlmImageVQVAEConfig = type("GlmImageVQVAEConfig", (), {})
+    setattr(glm_config_mod, "GlmImageConfig", type("GlmImageConfig", (), {}))
+    setattr(glm_config_mod, "GlmImageTextConfig", type("GlmImageTextConfig", (), {}))
+    setattr(glm_config_mod, "GlmImageVisionConfig", type("GlmImageVisionConfig", (), {}))
+    setattr(glm_config_mod, "GlmImageVQVAEConfig", type("GlmImageVQVAEConfig", (), {}))
     glm_proc_mod = types.ModuleType("transformers.models.glm_image.processing_glm_image")
-    glm_proc_mod.GlmImageProcessor = type("GlmImageProcessor", (), {})
+    setattr(glm_proc_mod, "GlmImageProcessor", type("GlmImageProcessor", (), {}))
 
     # vllm_omni submodules needed by the import chain
     vllm_omni_mod = MagicMock()
@@ -134,28 +135,9 @@ class TestGlmImageDataParser:
     def test_parse_mm_data_normalizes_img2img(self):
         parser = GlmImageDataParser.__new__(GlmImageDataParser)
         parser._expected_hidden_size = 4096
-        # Create a mock for the parent parse_mm_data
-        original_parse = type(parser).parse_mm_data
-
-        calls = []
-
-        def mock_parse(mm_data, **kwargs):
-            calls.append(mm_data)
-            return MagicMock()
-
-        # Monkey-patch temporarily
-        type(parser).parse_mm_data = mock_parse
-        try:
+        with patch.object(_ar_mod.MultiModalDataParser, "parse_mm_data", autospec=True) as parent_parse:
             parser.parse_mm_data({"img2img": "fake_image"})
-        except Exception:
-            pass  # parse might fail on mock, we just check the normalization
-        finally:
-            type(parser).parse_mm_data = original_parse
-
-        # Verify that "img2img" was normalized to "image"
-        if calls:
-            assert "image" in calls[0]
-            assert "img2img" not in calls[0]
+        parent_parse.assert_called_once_with(parser, {"image": "fake_image"})
 
 
 # =============================================================================
@@ -199,7 +181,7 @@ class TestBuildGenerationGrids:
         assert grids[1].tolist() == [1, 22, 11]
 
     def test_defaults_to_1024_when_no_target(self, processor):
-        kwargs = {}
+        kwargs: dict[str, int] = {}
         grids = processor._build_generation_grids(kwargs)
         assert grids[0].tolist() == [1, 32, 32]
 
