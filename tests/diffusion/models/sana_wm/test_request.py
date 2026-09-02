@@ -2,8 +2,6 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 """Unit tests for SANA-WM request normalization."""
 
-from types import SimpleNamespace
-
 import pytest
 
 from vllm_omni.diffusion.models.sana_wm.pipeline_sana_wm import (
@@ -16,6 +14,7 @@ from vllm_omni.diffusion.models.sana_wm.request import (
     SANA_WM_DEFAULT_WIDTH,
     normalize_sana_wm_payload,
 )
+from vllm_omni.inputs.data import OmniDiffusionSamplingParams
 
 pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
 
@@ -50,20 +49,26 @@ def test_defaults_are_latent_aligned():
 
 
 @pytest.mark.parametrize(
-    ("sampling_params", "expected"),
+    ("guidance_scale", "guidance_scale_provided", "expected"),
     [
-        (None, SANA_WM_DEFAULT_GUIDANCE_SCALE),
-        (SimpleNamespace(guidance_scale=None, guidance_scale_provided=False), SANA_WM_DEFAULT_GUIDANCE_SCALE),
-        (SimpleNamespace(guidance_scale=0.0, guidance_scale_provided=True), 0.0),
-        (SimpleNamespace(guidance_scale=2.5, guidance_scale_provided=True), 2.5),
+        (None, None, SANA_WM_DEFAULT_GUIDANCE_SCALE),
+        (1.0, False, SANA_WM_DEFAULT_GUIDANCE_SCALE),
+        (0.0, True, 0.0),
+        (2.5, True, 2.5),
     ],
 )
-def test_native_params_preserves_explicit_guidance_scale(sampling_params, expected):
+def test_native_params_preserves_explicit_guidance_scale(guidance_scale, guidance_scale_provided, expected):
     payload = {
         "height": SANA_WM_DEFAULT_HEIGHT,
         "width": SANA_WM_DEFAULT_WIDTH,
         "num_frames": SANA_WM_DEFAULT_NUM_FRAMES,
     }
+    sampling_params = None
+    if guidance_scale_provided is not None:
+        sampling_params = OmniDiffusionSamplingParams(
+            guidance_scale=guidance_scale,
+            guidance_scale_provided=guidance_scale_provided,
+        )
 
     params = SanaWmPipeline.__new__(SanaWmPipeline)._native_params(payload, sampling_params)
 
