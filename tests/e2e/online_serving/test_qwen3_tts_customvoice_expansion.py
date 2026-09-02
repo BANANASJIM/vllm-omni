@@ -148,6 +148,9 @@ def test_sample_rate_001(omni_server, online_client) -> None:
         "stream": False,
         "response_format": "wav",
         "sample_rate": 8000,
+        "min_audio_bytes": 1024,
+        # ASR may spell numeric units differently; this test only checks the sample-rate contract.
+        "transcript_expected_text": "",
         "task_type": "CustomVoice",
         "voice": "vivian",
     }
