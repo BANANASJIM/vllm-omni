@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
+
 from __future__ import annotations
 
 import hashlib
@@ -7,6 +10,7 @@ import sys
 import threading
 import types
 from collections.abc import Iterable
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import IntEnum
 from functools import lru_cache
@@ -152,6 +156,25 @@ _DYNIN_REMOTE_ALLOW_PATTERNS = ("*.py", "*.json", "*.yaml", "*.yml")
 _DYNIN_REMOTE_CACHE_LOCK = threading.Lock()
 _DYNIN_REMOTE_PACKAGE_BY_SNAPSHOT: dict[str, str] = {}
 _DYNIN_REMOTE_ATTR_CACHE: dict[tuple[str, str, str, str | None, bool], Any] = {}
+_DYNIN_MAGVIT_IMPORT_LOCK = threading.RLock()
+_DIFFUSERS_FLAX_WEIGHTS_NAME = "diffusion_flax_model.msgpack"
+
+
+@contextmanager
+def _dynin_magvit_diffusers_compat():
+    """Temporarily restore the diffusers export required by MAGVIT remote code."""
+    from diffusers import utils as diffusers_utils
+
+    with _DYNIN_MAGVIT_IMPORT_LOCK:
+        attributes = vars(diffusers_utils)
+        injected = "FLAX_WEIGHTS_NAME" not in attributes
+        if injected:
+            attributes["FLAX_WEIGHTS_NAME"] = _DIFFUSERS_FLAX_WEIGHTS_NAME
+        try:
+            yield
+        finally:
+            if injected:
+                attributes.pop("FLAX_WEIGHTS_NAME", None)
 
 
 @dataclass(frozen=True)
@@ -965,7 +988,7 @@ def get_dynin_config_resolver_attr(
     )
 
 
-def get_dynin_magvit_attr(
+def _get_dynin_magvit_attr(
     name: str,
     *,
     source: str | None = None,
@@ -1006,6 +1029,22 @@ def get_dynin_magvit_attr(
     raise ImportError(
         f"Failed to resolve MAGVIT attr '{attr_name}' from source={resolved_source!r} (revision={resolved_revision!r})."
     )
+
+
+def get_dynin_magvit_attr(
+    name: str,
+    *,
+    source: str | None = None,
+    revision: str | None = None,
+    local_files_only: bool | None = None,
+) -> Any:
+    with _dynin_magvit_diffusers_compat():
+        return _get_dynin_magvit_attr(
+            name,
+            source=source,
+            revision=revision,
+            local_files_only=local_files_only,
+        )
 
 
 def build_dynin_chat_prompt(content: str) -> str:
