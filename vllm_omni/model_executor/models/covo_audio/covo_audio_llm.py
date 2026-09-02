@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 # Copyright 2026 Tencent.
 from collections.abc import Iterable
 
@@ -48,7 +50,8 @@ class AudioAdapter(nn.Module):
             downsample (int): total downsampling factor, must be a power of 2
         """
         super().__init__()
-        assert downsample >= 2 and (downsample & (downsample - 1)) == 0, "downsample must be a power of 2"
+        if downsample < 2 or (downsample & (downsample - 1)) != 0:
+            raise ValueError("downsample must be a power of 2 and at least 2")
 
         num_layers = (
             downsample.bit_length() - 1
