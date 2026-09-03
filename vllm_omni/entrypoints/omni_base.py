@@ -676,7 +676,13 @@ class OmniBase(PDDisaggregationMixin):
 
         try:
             rid_key = str(req_id)
-            if stage_id == final_stage_id_for_e2e and rid_key not in metrics.e2e_done and finished:
+            failure_recorded = getattr(self.request_states.get(req_id), "failure_recorded", False)
+            if (
+                stage_id == final_stage_id_for_e2e
+                and rid_key not in metrics.e2e_done
+                and finished
+                and not failure_recorded
+            ):
                 metrics.on_finalize_request(
                     stage_id,
                     req_id,

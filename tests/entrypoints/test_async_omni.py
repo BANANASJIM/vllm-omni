@@ -330,6 +330,129 @@ def test_abort_enqueues_synthetic_finished_when_engine_returns_empty():
 
 
 @pytest.mark.cpu
+@pytest.mark.parametrize(
+    ("num_stages", "engine_returns_output"),
+    [(1, False), (2, True)],
+)
+def test_live_generate_abort_records_one_failure_without_success(mocker, num_stages, engine_returns_output):
+    """A consumed abort terminal must not also finalize as a success."""
+
+    async def run():
+        from vllm.outputs import CompletionOutput
+
+        from vllm_omni.engine.messages import OutputMessage
+        from vllm_omni.metrics import OmniPrometheusMetrics
+
+        request_added = asyncio.Event()
+        final_stage_id = num_stages - 1
+        stages = [
+            SimpleNamespace(
+                final_output=stage_id == final_stage_id,
+                final_output_type="text",
+                stage_type="llm",
+                model_stage=f"stage_{stage_id}",
+            )
+            for stage_id in range(num_stages)
+        ]
+
+        async def add_request_async(*, request_id, **kwargs):
+            del request_id, kwargs
+            request_added.set()
+
+        async def abort_async(request_ids):
+            if not engine_returns_output:
+                return []
+            request_id = request_ids[0]
+            engine_output = OmniRequestOutput(
+                request_id=request_id,
+                finished=True,
+                stage_id=final_stage_id,
+                final_output_type="text",
+                outputs=[
+                    CompletionOutput(
+                        index=0,
+                        text="partial",
+                        token_ids=[7, 8, 9],
+                        cumulative_logprob=None,
+                        logprobs=None,
+                        finish_reason="abort",
+                        stop_reason=None,
+                    )
+                ],
+            )
+            return [
+                OutputMessage(
+                    request_id=request_id,
+                    stage_id=final_stage_id,
+                    replica_id=None,
+                    engine_outputs=engine_output,
+                    metrics=None,
+                    finished=True,
+                    stage_submit_ts=None,
+                )
+            ]
+
+        omni = object.__new__(AsyncOmni)
+        omni._pause_cond = asyncio.Condition()
+        omni._paused = False
+        omni._admitting = 0
+        omni._sleeping_tags = set()
+        omni._stage_meta_list = stages
+        omni.output_modalities = ["text"]
+        omni.default_sampling_params_list = [SimpleNamespace() for _ in stages]
+        omni.engine = SimpleNamespace(
+            num_stages=num_stages,
+            stage_clients=[SimpleNamespace(stage_type="llm") for _ in stages],
+            add_request_async=add_request_async,
+            abort_async=abort_async,
+            get_stage_metadata=lambda stage_id: stages[stage_id],
+        )
+        omni.request_states = {}
+        omni._consumed_metric_messages = {}
+        omni._enable_ar_profiler = False
+        omni.transfer_metrics = None
+        omni.mod_metrics = mocker.Mock()
+        omni.prom_metrics = mocker.Mock(spec=OmniPrometheusMetrics)
+        omni.log_stats = False
+        omni._final_output_handler = lambda: None
+        omni.resolve_sampling_params_list = lambda params, allow_delta_coercion: list(params)
+        omni._maybe_expand_sampling_params = lambda params: params
+        omni._get_pd_separation_pair = lambda: None
+        omni._compute_final_stage_id = lambda output_modalities: final_stage_id
+        omni._compute_final_output_stage_ids = lambda output_modalities: [final_stage_id]
+        omni._resolve_transfer_replica = lambda *_: None
+
+        outputs = []
+
+        async def consume():
+            async for output in omni.generate(
+                prompt={"prompt": "test"},
+                request_id="req-1",
+                sampling_params_list=[SimpleNamespace() for _ in stages],
+                output_modalities=["text"],
+            ):
+                outputs.append(output)
+
+        task = asyncio.create_task(consume())
+        await request_added.wait()
+        metrics = next(iter(omni.request_states.values())).metrics
+
+        await omni.abort("req-1")
+        await task
+
+        assert len(outputs) == 1
+        assert outputs[0].stage_id == final_stage_id
+        assert outputs[0].outputs[0].finish_reason == "abort"
+        assert metrics.e2e_count == 0
+        assert not omni.request_states
+        omni.prom_metrics.request_failed.assert_called_once_with()
+        omni.prom_metrics.inc_requests_failed.assert_called_once_with("client_abort")
+        omni.prom_metrics.request_succeeded.assert_not_called()
+
+    asyncio.run(run())
+
+
+@pytest.mark.cpu
 def test_generate_accepts_request_after_repeated_cancellations():
     async def run_test():
         submitted_request_ids: list[str] = []
