@@ -1680,7 +1680,7 @@ class TestTTSMethods:
         from unittest.mock import AsyncMock, MagicMock
 
         adapter = MagicMock()
-        adapter.build_prompt.return_value = [1, 1, 1, 1]
+        adapter.build_voice_clone_prompt.return_value = ([1, 1, 1, 1], 1)
         speech_server._resolve_higgs_audio_v3_adapter = AsyncMock(return_value=adapter)
         codes = torch.arange(8, dtype=torch.long).view(8, 1)
         speech_server._resolve_higgs_audio_v3_ref_codes = AsyncMock(return_value=(codes, False, False))
@@ -1698,6 +1698,7 @@ class TestTTSMethods:
 
         assert prompt_a["prompt_token_ids"] == prompt_b["prompt_token_ids"]
         assert prompt_a["cache_salt"] != prompt_b["cache_salt"]
+        assert prompt_a["additional_information"]["audio_input_ids_offset"] == 1
         assert prompt_a["additional_information"]["ref_audio_cache_key"] == "key_aaa"
         assert prompt_b["additional_information"]["ref_audio_cache_key"] == "key_bbb"
 

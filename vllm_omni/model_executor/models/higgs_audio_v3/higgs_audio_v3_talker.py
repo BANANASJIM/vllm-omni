@@ -186,6 +186,7 @@ class HiggsAudioV3TalkerForConditionalGeneration(nn.Module):
         self._last_step_input_ids: torch.Tensor | None = None
         self._last_step_query_start_loc: torch.Tensor | None = None
         self._last_step_query_start_loc_buffer: torch.Tensor | None = None
+        self._last_step_has_prefill: bool | None = None
         self.supports_omni_decode_step_metadata = True
         self._decode_step_metadata_from_runner = False
         self._last_audio_codes: torch.Tensor | None = None
@@ -345,6 +346,7 @@ class HiggsAudioV3TalkerForConditionalGeneration(nn.Module):
         inputs_embeds: torch.Tensor | None = None,
         omni_query_start_loc: torch.Tensor | None = None,
         req_ids: list[str] | None = None,
+        request_is_prefill: list[bool] | None = None,
         **_: Any,
     ) -> None:
         """Update per-step metadata before runner forward or CUDA graph replay."""
@@ -354,6 +356,7 @@ class HiggsAudioV3TalkerForConditionalGeneration(nn.Module):
             if self._use_external_decode_cudagraph and input_ids.is_cuda and input_ids.ndim >= 1:
                 self._ensure_decode_state_capacity(int(input_ids.shape[0]), input_ids.device)
         self._set_last_step_query_start_loc(omni_query_start_loc)
+        self._last_step_has_prefill = None if request_is_prefill is None else any(request_is_prefill)
         self._decode_step_metadata_from_runner = True
 
         if req_ids is not None:
@@ -452,16 +455,15 @@ class HiggsAudioV3TalkerForConditionalGeneration(nn.Module):
     ) -> torch.Tensor:
         metadata_from_runner = self._decode_step_metadata_from_runner
         self._decode_step_metadata_from_runner = False
+        prefill_from_runner = self._last_step_has_prefill if metadata_from_runner else None
+        self._last_step_has_prefill = None
 
         info_dicts = kwargs.get("model_intermediate_buffer")
         if info_dicts is None:
             info_dicts = kwargs.get("runtime_additional_information")
 
         if inputs_embeds is None:
-            # Mask -100 placeholders to 0 before embedding. Use torch.where
-            # (no Python data-dependent branch) so this is CUDA-graph safe.
-            safe_ids = torch.where(input_ids < 0, torch.zeros_like(input_ids), input_ids)
-            hidden_states = self.model.embed_tokens(safe_ids)
+            hidden_states = self.model.embed_tokens(input_ids)
         else:
             hidden_states = inputs_embeds
 
@@ -493,7 +495,9 @@ class HiggsAudioV3TalkerForConditionalGeneration(nn.Module):
         # require Python dict/list ops that break CUDA graph capture.
         # Prefer max_query_len where available: concurrent decode has
         # input_ids.numel() > 1 but max_query_len == 1.
-        if max_query_len is not None:
+        if prefill_from_runner is not None:
+            is_prefill = prefill_from_runner
+        elif max_query_len is not None:
             is_prefill = int(max_query_len) > 1
         else:
             is_prefill = (
@@ -502,8 +506,7 @@ class HiggsAudioV3TalkerForConditionalGeneration(nn.Module):
                 and not self._is_single_token_decode_step(int(hidden_states.shape[0]))
             )
         if is_prefill and info_dicts:
-            # Voice clone: replace -100 placeholder positions with ref audio embeddings
-            hidden_states = self._apply_ref_audio_substitution(hidden_states, input_ids, info_dicts)
+            hidden_states = self._apply_ref_audio_substitution(hidden_states, positions, info_dicts)
 
         # Audio feedback at decode: replace continuation token embeddings
         if input_ids is not None and inputs_embeds is None:
@@ -643,31 +646,27 @@ class HiggsAudioV3TalkerForConditionalGeneration(nn.Module):
     def _apply_ref_audio_substitution(
         self,
         hidden_states: torch.Tensor,
-        input_ids: torch.Tensor,
+        positions: torch.Tensor,
         info_dicts: list[dict[str, Any]] | None,
     ) -> torch.Tensor:
-        """Replace -100 placeholder positions with fused multi-codebook embeddings
-        of the delay-pattern-encoded reference audio codes.
+        """Inject reference-audio embeddings into their prompt span.
 
         Called at prefill to inject voice clone reference. ``info_dicts`` is a
         list of per-request dicts from ``model_intermediate_buffer``, each
         containing ``audio_input_ids`` ([T, N] delayed codes) and
-            ``audio_input_ids_mask`` ([T] bool mask).
+        ``audio_input_ids_mask`` ([T] bool mask). ``audio_input_ids_offset``
+        is the absolute prompt position corresponding to code row zero.
         """
         if not info_dicts:
             return hidden_states
 
-        PLACEHOLDER = -100
-        flat_ids = input_ids.reshape(-1)
-        placeholder_mask = flat_ids == PLACEHOLDER
-        if not placeholder_mask.any():
-            return hidden_states
+        flat_positions = positions.reshape(-1)
 
         # Use query_start_loc to map placeholders to per-request spans
         q_start = self._last_step_query_start_loc
         if not isinstance(q_start, torch.Tensor) or q_start.numel() < 2:
             # Fallback: single-request batch
-            q_start_list = [0, int(flat_ids.numel())]
+            q_start_list = [0, int(flat_positions.numel())]
         else:
             q_start_list = q_start.detach().to("cpu").tolist()
 
@@ -681,13 +680,14 @@ class HiggsAudioV3TalkerForConditionalGeneration(nn.Module):
 
             codes = info.get("audio_input_ids")
             mask = info.get("audio_input_ids_mask")
+            ref_offset = info.get("audio_input_ids_offset")
 
             # Handle msgspec serialization (may be list-wrapped)
             if isinstance(codes, list):
                 codes = codes[0] if codes else None
             if isinstance(mask, list):
                 mask = mask[0] if mask else None
-            if not isinstance(codes, torch.Tensor):
+            if not isinstance(codes, torch.Tensor) or not isinstance(ref_offset, int):
                 continue
 
             # codes shape: [T, num_codebooks] delayed reference codes
@@ -704,23 +704,23 @@ class HiggsAudioV3TalkerForConditionalGeneration(nn.Module):
             if codes.numel() == 0:
                 continue
 
-            # Find placeholder positions in this request's span
+            # Map this scheduled chunk's absolute prompt positions to rows in
+            # the full delayed-code tensor. This also handles partial prefix
+            # cache hits and reference spans split across prefill chunks.
             s = int(q_start_list[i])
             e = int(q_start_list[i + 1])
-            if e - s <= 1:
-                continue  # Decode step, skip
-
-            span_mask = placeholder_mask[s:e]
-            placeholders = span_mask.nonzero(as_tuple=True)[0]
             n_codes = int(codes.shape[0])
-
-            if int(placeholders.numel()) < n_codes:
-                continue  # Mismatch
+            code_rows = flat_positions[s:e].to(torch.long) - ref_offset
+            in_ref_span = (code_rows >= 0) & (code_rows < n_codes)
+            targets_in_span = in_ref_span.nonzero(as_tuple=True)[0]
+            if targets_in_span.numel() == 0:
+                continue
 
             # Embed delayed codes via fused multi-codebook embedding
-            target = placeholders[:n_codes] + s
+            target = targets_in_span + s
             codes_device = codes.to(device=hidden_states.device, dtype=torch.long)
-            embeds = self.multimodal_embedding(codes_device)  # [n_codes, hidden]
+            source_rows = code_rows.index_select(0, targets_in_span)
+            embeds = self.multimodal_embedding(codes_device.index_select(0, source_rows))
 
             if new_hidden is None:
                 new_hidden = hidden_states.clone()

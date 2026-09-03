@@ -1986,12 +1986,17 @@ class OmniGPUModelRunner(GPUModelRunner):
         model_kwargs_extra = self._build_model_kwargs_extra()
         update_decode_metadata = getattr(self.model, "update_decode_step_metadata", None)
         if getattr(self.model, "supports_omni_decode_step_metadata", False) and callable(update_decode_metadata):
+            request_is_prefill = [
+                int(self.input_batch.num_computed_tokens_cpu[i]) < int(self.input_batch.num_prompt_tokens[i])
+                for i in range(len(self.input_batch.req_ids))
+            ]
             update_decode_metadata(
                 input_ids=input_ids,
                 positions=positions,
                 inputs_embeds=inputs_embeds,
                 omni_query_start_loc=model_kwargs_extra.get("omni_query_start_loc"),
                 req_ids=self.input_batch.req_ids,
+                request_is_prefill=request_is_prefill,
             )
 
         model_output = super()._model_forward(

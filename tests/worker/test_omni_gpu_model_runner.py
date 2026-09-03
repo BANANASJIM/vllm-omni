@@ -98,11 +98,13 @@ class DummyBuffer:
 
 
 class DummyInputBatch:
-    """A minimal input batch that only provides `req_ids`."""
+    """A minimal input batch for model-forward metadata tests."""
 
-    def __init__(self, req_ids):
+    def __init__(self, req_ids, *, num_computed_tokens=None, num_prompt_tokens=None):
         self.req_ids = req_ids
         self.req_id_to_index = {r: i for i, r in enumerate(req_ids)}
+        self.num_computed_tokens_cpu = num_computed_tokens or [0] * len(req_ids)
+        self.num_prompt_tokens = num_prompt_tokens or [0] * len(req_ids)
 
 
 class DummyReqState:
@@ -119,13 +121,18 @@ def test_model_forward_passes_request_ids_to_decode_metadata(monkeypatch):
     )
     runner = object.__new__(OmniGPUModelRunner)
     runner.model = model
-    runner.input_batch = DummyInputBatch(["request-a", "request-b"])
+    runner.input_batch = DummyInputBatch(
+        ["request-a", "request-b"],
+        num_computed_tokens=[0, 3],
+        num_prompt_tokens=[4, 3],
+    )
     runner._build_model_kwargs_extra = lambda: {}
     monkeypatch.setattr(GPUModelRunner, "_model_forward", lambda *_args, **_kwargs: torch.zeros(1))
 
     OmniGPUModelRunner._model_forward(runner, input_ids=torch.ones(2, dtype=torch.long))
 
     assert received["req_ids"] == ["request-a", "request-b"]
+    assert received["request_is_prefill"] == [True, False]
 
 
 class MiMoAudioForConditionalGeneration(torch.nn.Module):

@@ -1,22 +1,23 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 """Prompt builder for higgs-audio v3 TTS.
 
 Prompt formats:
   Zero-shot:
     <|tts|> <|text|> {text tokens} <|audio|>
   Voice clone (no ref text):
-    <|tts|> <|ref_audio|> [-100]×N <|text|> {text tokens} <|audio|>
+    <|tts|> <|ref_audio|> [<|ref_audio|>]×N <|text|> {text tokens} <|audio|>
   Voice clone (with ref text):
-    <|tts|> <|ref_text|> {ref text tokens} <|ref_audio|> [-100]×N <|text|> {text tokens} <|audio|>
+    <|tts|> <|ref_text|> {ref text tokens} <|ref_audio|> [<|ref_audio|>]×N <|text|> {text tokens} <|audio|>
 
--100 placeholders are replaced at prefill time with fused multi-codebook
-embeddings of the delay-pattern-encoded reference audio codes.
+The repeated, in-vocabulary reference-audio tokens are replaced at prefill
+time with fused multi-codebook embeddings of the delay-pattern-encoded
+reference audio codes.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import torch
@@ -28,6 +29,8 @@ __all__ = [
     "apply_delay_pattern",
 ]
 
+# Compatibility export for callers that imported the former sentinel. New
+# prompts must use the tokenizer-specific, in-vocabulary reference-audio ID.
 AUDIO_PLACEHOLDER_ID = -100
 
 _REQUIRED_SPECIALS: tuple[str, ...] = (
@@ -108,16 +111,47 @@ class HiggsAudioV3TokenizerAdapter:
 
         Args:
             text: Target text to synthesize.
-            num_ref_tokens: Number of delay-pattern reference code rows.
-                0 means zero-shot (no voice clone).
-            reference_text: Optional transcript of the reference audio.
+            num_ref_tokens: Must be zero. Voice-clone callers need the offset
+                returned by :meth:`build_voice_clone_prompt`.
+            reference_text: Ignored for a plain TTS prompt.
         """
+        if num_ref_tokens != 0:
+            raise ValueError("Voice-clone prompts must use build_voice_clone_prompt()")
+        ids, _ = self._build_prompt(
+            text,
+            num_ref_tokens=num_ref_tokens,
+            reference_text=reference_text,
+        )
+        return ids
+
+    def build_voice_clone_prompt(
+        self,
+        text: str,
+        *,
+        num_ref_tokens: int,
+        reference_text: str | None = None,
+    ) -> tuple[list[int], int]:
+        """Build a voice-clone prompt and return its reference-audio offset."""
+        if num_ref_tokens <= 0:
+            raise ValueError(f"num_ref_tokens must be > 0, got {num_ref_tokens}")
+        ids, ref_audio_offset = self._build_prompt(
+            text,
+            num_ref_tokens=num_ref_tokens,
+            reference_text=reference_text,
+        )
+        return ids, cast(int, ref_audio_offset)
+
+    def _build_prompt(
+        self,
+        text: str,
+        *,
+        num_ref_tokens: int,
+        reference_text: str | None,
+    ) -> tuple[list[int], int | None]:
         if not text or not text.strip():
             raise ValueError("Text input must be non-empty for TTS")
-        if num_ref_tokens < 0:
-            raise ValueError(f"num_ref_tokens must be >= 0, got {num_ref_tokens}")
-
         ids: list[int] = [self.tts_id]
+        ref_audio_offset: int | None = None
 
         # Voice clone: optional ref text + ref audio placeholders
         if reference_text and num_ref_tokens > 0 and self.ref_text_id is not None:
@@ -127,9 +161,10 @@ class HiggsAudioV3TokenizerAdapter:
             if self.ref_audio_id is None:
                 raise ValueError("Tokenizer missing <|ref_audio|> for voice clone")
             ids.append(self.ref_audio_id)
-            ids.extend([AUDIO_PLACEHOLDER_ID] * num_ref_tokens)
+            ref_audio_offset = len(ids)
+            ids.extend([self.ref_audio_id] * num_ref_tokens)
 
         ids.append(self.text_id)
         ids.extend(self._tok.encode(text, add_special_tokens=False))
         ids.append(self.audio_id)
-        return ids
+        return ids, ref_audio_offset

@@ -13,6 +13,7 @@ import os
 import time
 from collections import OrderedDict, defaultdict
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 import torch
@@ -1470,6 +1471,8 @@ class TestPromptBuilder:
         """Create a mock tokenizer with the required special tokens."""
 
         class MockTokenizer:
+            max_token_id = 151704
+
             def __init__(self):
                 self._added_vocab = {
                     "<|tts|>": 151700,
@@ -1544,6 +1547,138 @@ class TestPromptBuilder:
         # Should not contain ref_audio or ref_text token IDs
         assert 151703 not in ids  # <|ref_audio|>
         assert 151704 not in ids  # <|ref_text|>
+
+    def test_voice_clone_prompt_requires_offset_aware_builder(self):
+        from vllm_omni.model_executor.models.higgs_audio_v3.higgs_audio_v3_tokenizer import (
+            HiggsAudioV3TokenizerAdapter,
+        )
+
+        adapter = HiggsAudioV3TokenizerAdapter(self._make_mock_tokenizer())
+        with pytest.raises(ValueError, match="build_voice_clone_prompt"):
+            adapter.build_prompt("Hello", num_ref_tokens=2)
+
+    def test_voice_clone_prompt_passes_vllm_token_validation(self):
+        from vllm.v1.engine.input_processor import InputProcessor
+
+        from vllm_omni.model_executor.models.higgs_audio_v3.higgs_audio_v3_tokenizer import (
+            HiggsAudioV3TokenizerAdapter,
+        )
+
+        tok = self._make_mock_tokenizer()
+        ids, ref_audio_offset = HiggsAudioV3TokenizerAdapter(tok).build_voice_clone_prompt(
+            "Hello",
+            num_ref_tokens=2,
+            reference_text="Speaker",
+        )
+        processor = object.__new__(InputProcessor)
+        processor.model_config = SimpleNamespace(
+            max_model_len=4096,
+            runner_type="generate",
+            get_vocab_size=lambda: tok.max_token_id + 1,
+        )
+        processor.renderer = SimpleNamespace(tokenizer=tok)
+        processor.skip_prompt_length_check = False
+        processor.supports_mm_inputs = False
+        processor.mm_encoder_cache_size = 0
+
+        processor._validate_model_input(
+            {"type": "tokens", "prompt_token_ids": ids},
+            prompt_type="decoder",
+        )
+        assert ids[ref_audio_offset : ref_audio_offset + 2] == [151703, 151703]
+
+
+class TestReferenceAudioSubstitution:
+    @staticmethod
+    def _make_talker(query_start_loc):
+        from vllm_omni.model_executor.models.higgs_audio_v3 import higgs_audio_v3_talker as mod
+
+        class FakeTalker:
+            _last_step_query_start_loc = query_start_loc
+
+            @staticmethod
+            def multimodal_embedding(codes):
+                values = codes.sum(dim=1, keepdim=True).to(torch.float32)
+                return values.expand(-1, 3)
+
+        talker: Any = FakeTalker()
+        talker.apply_reference = mod.HiggsAudioV3TalkerForConditionalGeneration._apply_ref_audio_substitution.__get__(
+            talker
+        )
+        return talker
+
+    def test_batched_requests_replace_only_their_reference_audio_spans(self):
+        talker = self._make_talker(torch.tensor([0, 7, 15]))
+        positions = torch.tensor([0, 1, 2, 3, 4, 5, 6, 0, 1, 2, 3, 4, 5, 6, 7])
+        hidden = torch.zeros(15, 3)
+        info_dicts = [
+            {
+                "audio_input_ids": torch.tensor([[1, 2], [3, 4]]),
+                "audio_input_ids_mask": torch.ones(2, dtype=torch.bool),
+                "audio_input_ids_offset": 2,
+            },
+            {
+                "audio_input_ids": torch.tensor([[10, 20], [30, 40], [50, 60]]),
+                "audio_input_ids_mask": torch.ones(3, dtype=torch.bool),
+                "audio_input_ids_offset": 3,
+            },
+        ]
+
+        result = talker.apply_reference(hidden, positions, info_dicts)
+
+        assert torch.equal(result[2:4, 0], torch.tensor([3.0, 7.0]))
+        assert torch.equal(result[10:13, 0], torch.tensor([30.0, 70.0, 110.0]))
+        unchanged = torch.tensor([0, 1, 4, 5, 6, 7, 8, 9, 13, 14])
+        assert torch.count_nonzero(result.index_select(0, unchanged)) == 0
+
+    def test_chunked_prefill_selects_matching_reference_code_rows(self):
+        talker = self._make_talker(torch.tensor([0, 1]))
+        codes = torch.tensor([[1, 1], [2, 2], [3, 3]])
+        info = {
+            "audio_input_ids": codes,
+            "audio_input_ids_mask": torch.ones(3, dtype=torch.bool),
+            "audio_input_ids_offset": 4,
+        }
+
+        first = talker.apply_reference(torch.zeros(1, 3), torch.tensor([4]), [info])
+        second = talker.apply_reference(torch.zeros(1, 3), torch.tensor([6]), [info])
+
+        assert torch.equal(first[0], torch.full((3,), 2.0))
+        assert torch.equal(second[0], torch.full((3,), 6.0))
+
+    @pytest.mark.parametrize(("is_prefill", "expected"), [(True, 1.0), (False, 0.0)])
+    def test_single_token_step_uses_runner_phase_metadata(self, is_prefill, expected):
+        from vllm_omni.model_executor.models.higgs_audio_v3 import higgs_audio_v3_talker as mod
+
+        class FakeTalker:
+            _decode_step_metadata_from_runner = True
+            _last_step_has_prefill = is_prefill
+            _last_step_query_start_loc = torch.tensor([0, 1])
+            config = SimpleNamespace(enable_mlp_cudagraph=False)
+            model = SimpleNamespace(embed_tokens=lambda ids: torch.zeros(ids.shape[0], 3))
+
+            @staticmethod
+            def _apply_ref_audio_substitution(hidden, positions, info_dicts):
+                return hidden + 1
+
+            @staticmethod
+            def _apply_audio_feedback(hidden, input_ids):
+                return hidden
+
+            @staticmethod
+            def _run_qwen3_layers_eager(positions, hidden):
+                return hidden
+
+        talker = FakeTalker()
+
+        result = mod.HiggsAudioV3TalkerForConditionalGeneration.forward(
+            talker,
+            input_ids=torch.tensor([151703]),
+            positions=torch.tensor([4]),
+            model_intermediate_buffer=[{"audio_input_ids_offset": 4}],
+        )
+
+        assert torch.equal(result, torch.full((1, 3), expected))
 
 
 class TestVoiceCloneReferenceCache:

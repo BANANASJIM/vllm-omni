@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 """Offline higgs-audio v3 inference example.
 
 Runs Stage 0 (Qwen3 talker) + Stage 1 (HiggsAudio codec) end-to-end
@@ -166,7 +166,7 @@ def main():
     total_dur = 0.0
     for text in args.texts:
         if ref_codes_delayed is not None:
-            prompt_ids = adapter.build_prompt(
+            prompt_ids, audio_input_ids_offset = adapter.build_voice_clone_prompt(
                 text,
                 num_ref_tokens=int(ref_codes_delayed.shape[0]),
                 reference_text=args.ref_text,
@@ -176,6 +176,7 @@ def main():
                 "additional_information": {
                     "audio_input_ids": ref_codes_delayed.to(torch.long),
                     "audio_input_ids_mask": torch.ones(ref_codes_delayed.shape[0], dtype=torch.bool),
+                    "audio_input_ids_offset": audio_input_ids_offset,
                 },
             }
         else:
