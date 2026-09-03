@@ -93,7 +93,7 @@ class OpenAICreateSpeechRequest(BaseModel):
     stream_format: Literal["sse", "audio"] | None = Field(
         default=None,
         description=(
-            "Streaming output format. 'audio' streams raw pcm/wav bytes; "
+            "Streaming output format. 'audio' streams raw pcm/wav/opus bytes; "
             "'sse' streams OpenAI speech.audio.* SSE events. If omitted, stream=true "
             "selects SSE and stream=false remains non-streaming."
         ),
@@ -102,8 +102,8 @@ class OpenAICreateSpeechRequest(BaseModel):
         default=False,
         description=(
             "Streaming switch; defaults to OpenAI speech.audio.* SSE events. "
-            "Set stream_format='audio' to opt into raw pcm/wav byte streaming. "
-            "HTTP streaming requires response_format='pcm' or 'wav'. "
+            "Set stream_format='audio' to opt into raw pcm/wav/opus byte streaming. "
+            "HTTP streaming requires response_format='pcm', 'wav', or 'opus'. "
             "Models with native speed control may accept speed adjustment over HTTP."
         ),
     )
@@ -336,10 +336,10 @@ class OpenAICreateSpeechRequest(BaseModel):
     @model_validator(mode="after")
     def validate_streaming_constraints(self) -> "OpenAICreateSpeechRequest":
         if self.is_streaming():
-            if self.response_format not in ("pcm", "wav"):
+            if self.response_format not in ("pcm", "wav", "opus"):
                 raise ValueError(
                     "Streaming (stream=true, stream_format='audio', or stream_format='sse') "
-                    "requires response_format='pcm' or 'wav'. "
+                    "requires response_format='pcm', 'wav', or 'opus'. "
                     f"Got response_format='{self.response_format}'."
                 )
             if self.speed is None:

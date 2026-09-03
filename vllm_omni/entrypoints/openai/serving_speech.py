@@ -15,7 +15,7 @@ from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from http import HTTPStatus
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
@@ -38,6 +38,7 @@ from vllm.utils.async_utils import make_async
 from vllm.v1.engine.exceptions import EngineDeadError, EngineGenerateError
 
 from vllm_omni.entrypoints.openai.audio_utils_mixin import AudioMixin, StreamingAudioResampler
+from vllm_omni.entrypoints.openai.ogg_opus import OPUS_SAMPLE_RATE, OggOpusEncoder
 from vllm_omni.entrypoints.openai.protocol.audio import (
     AudioResponse,
     BatchSpeechRequest,
@@ -2224,7 +2225,7 @@ class OmniOpenAIServingSpeech(OpenAIServing, AudioMixin):
         Args:
             generator: Async generator from the engine
             request_id: Request identifier for logging
-            response_format: Audio format (pcm or wav)
+            response_format: Audio format (pcm, wav, or opus)
 
         Yields:
             Raw audio bytes for each chunk (with WAV header for first chunk if wav format)
@@ -2237,6 +2238,7 @@ class OmniOpenAIServingSpeech(OpenAIServing, AudioMixin):
         artifact_ready = False
         source_sample_rate: int | None = None
         resampler: StreamingAudioResampler | None = None
+        opus_encoder: OggOpusEncoder | None = None
 
         # SSE supplies an accumulator for usage output. Raw-audio and WebSocket
         # streams retain terminal metrics only when their model adapter needs
@@ -2304,6 +2306,8 @@ class OmniOpenAIServingSpeech(OpenAIServing, AudioMixin):
                         # as first audio; the post-loop guard below needs to
                         # see an audio-less stream to fail the request.
                         continue
+                    if response_format == "opus" and int(np.size(chunk_np)) == 0:
+                        continue
                     # For WAV format, emit header before first audio chunk
                     if response_format == "wav" and first_chunk:
                         num_channels = _infer_audio_num_channels(np.asarray(chunk_np))
@@ -2315,21 +2319,27 @@ class OmniOpenAIServingSpeech(OpenAIServing, AudioMixin):
                         yield wav_header
                         first_chunk = False
 
-                    # Convert audio to PCM bytes
-                    audio_obj = CreateAudio(
-                        audio_tensor=chunk_np,
-                        sample_rate=output_sample_rate,
-                        response_format="pcm",
-                        speed=1.0,
-                        base64_encode=False,
-                    )
                     if first_audio_chunk_s is None:
                         first_audio_chunk_s = time.perf_counter()
-                    audio_bytes = self.create_audio(audio_obj).audio_data
-                    if include_sample_rate:
-                        yield audio_bytes, output_sample_rate
+                    if response_format == "opus":
+                        if opus_encoder is None:
+                            opus_encoder = OggOpusEncoder()
+                        audio_bytes = opus_encoder.encode(chunk_np, output_sample_rate)
                     else:
-                        yield audio_bytes
+                        audio_obj = CreateAudio(
+                            audio_tensor=chunk_np,
+                            sample_rate=output_sample_rate,
+                            response_format="pcm",
+                            speed=1.0,
+                            base64_encode=False,
+                        )
+                        audio_bytes = cast(bytes, self.create_audio(audio_obj).audio_data)
+                    if audio_bytes:
+                        if include_sample_rate:
+                            emitted_sample_rate = OPUS_SAMPLE_RATE if response_format == "opus" else output_sample_rate
+                            yield audio_bytes, emitted_sample_rate
+                        else:
+                            yield audio_bytes
 
             if resampler is not None:
                 final_chunk = resampler.process(np.empty((0,), dtype=np.float32), final=True)
@@ -2342,20 +2352,27 @@ class OmniOpenAIServingSpeech(OpenAIServing, AudioMixin):
                             bits_per_sample=16,
                         )
                         first_chunk = False
-                    audio_obj = CreateAudio(
-                        audio_tensor=final_chunk,
-                        sample_rate=output_sample_rate,
-                        response_format="pcm",
-                        speed=1.0,
-                        base64_encode=False,
-                    )
                     if first_audio_chunk_s is None:
                         first_audio_chunk_s = time.perf_counter()
-                    audio_bytes = self.create_audio(audio_obj).audio_data
-                    if include_sample_rate:
-                        yield audio_bytes, output_sample_rate
+                    if response_format == "opus":
+                        if opus_encoder is None:
+                            opus_encoder = OggOpusEncoder()
+                        audio_bytes = opus_encoder.encode(final_chunk, output_sample_rate)
                     else:
-                        yield audio_bytes
+                        audio_obj = CreateAudio(
+                            audio_tensor=final_chunk,
+                            sample_rate=output_sample_rate,
+                            response_format="pcm",
+                            speed=1.0,
+                            base64_encode=False,
+                        )
+                        audio_bytes = cast(bytes, self.create_audio(audio_obj).audio_data)
+                    if audio_bytes:
+                        if include_sample_rate:
+                            emitted_sample_rate = OPUS_SAMPLE_RATE if response_format == "opus" else output_sample_rate
+                            yield audio_bytes, emitted_sample_rate
+                        else:
+                            yield audio_bytes
             if self._tts_model_type in _AUDEX_NO_AUDIO_GUARD_MODEL_TYPES and first_audio_chunk_s is None:
                 # Audex contract: zero codec tokens must abort the stream, not
                 # complete it cleanly with zero audio bytes.
@@ -2365,6 +2382,13 @@ class OmniOpenAIServingSpeech(OpenAIServing, AudioMixin):
             # bytes, but they must terminate as an error rather than cleanly.
             if tts_params is not None and usage_acc is not None:
                 self._validate_tts_generation(tts_params, usage_acc)
+            if opus_encoder is not None:
+                final_bytes = opus_encoder.finish()
+                if final_bytes:
+                    if include_sample_rate:
+                        yield final_bytes, OPUS_SAMPLE_RATE
+                    else:
+                        yield final_bytes
             self._mark_ref_audio_artifact_ready_for_request(request_id)
             artifact_ready = True
             total_ms = (time.perf_counter() - stream_start_s) * 1000.0
@@ -2421,6 +2445,8 @@ class OmniOpenAIServingSpeech(OpenAIServing, AudioMixin):
             logger.exception("Streaming speech generation failed for %s: %s", request_id, e)
             raise
         finally:
+            if opus_encoder is not None:
+                opus_encoder.close()
             if not artifact_ready:
                 self._discard_ref_audio_artifact_warmup(request_id)
 
@@ -3565,11 +3591,11 @@ class OmniOpenAIServingSpeech(OpenAIServing, AudioMixin):
         *,
         mode_label: str,
     ) -> tuple[str, Response | None]:
-        """Validate pcm/wav + speed constraints for streaming speech responses."""
+        """Validate pcm/wav/opus + speed constraints for streaming speech responses."""
         response_format = (request.response_format or "wav").lower()
-        if response_format not in ("pcm", "wav"):
+        if response_format not in ("pcm", "wav", "opus"):
             return response_format, self.create_error_response(
-                f"{mode_label} is only supported for 'pcm' and 'wav' formats. Got '{response_format}'."
+                f"{mode_label} is only supported for 'pcm', 'wav', and 'opus' formats. Got '{response_format}'."
             )
         if request.speed is not None and request.speed != 1.0 and not self._uses_native_speed_control():
             return response_format, self.create_error_response(
@@ -3602,9 +3628,10 @@ class OmniOpenAIServingSpeech(OpenAIServing, AudioMixin):
 
         Streaming is supported via the ``stream=True`` switch or ``stream_format='sse'``,
         which return OpenAI ``speech.audio.*`` SSE events. ``stream_format='audio'``
-        opts into raw audio streaming with ``response_format='pcm'`` or ``'wav'``.
+        opts into raw audio streaming with ``response_format='pcm'``, ``'wav'``, or ``'opus'``.
         Raw audio streaming yields each Code2Wav chunk as raw bytes as soon as it is
-        decoded. Raw WAV streaming emits a header with placeholder size values first.
+        decoded. Raw WAV streaming emits a header with placeholder size values first;
+        Opus streaming emits one continuous Ogg logical stream.
         """
         if request.voice is not None:
             if _is_default_voice(request.voice.lower(), self._get_available_speakers()):
@@ -3650,7 +3677,11 @@ class OmniOpenAIServingSpeech(OpenAIServing, AudioMixin):
                 if error is not None:
                     return error
 
-                media_type = "audio/wav" if response_format == "wav" else "audio/pcm"
+                media_type = {
+                    "pcm": "audio/pcm",
+                    "wav": "audio/wav",
+                    "opus": "audio/ogg",
+                }[response_format]
                 _, generator, raw_tts_params = await self._prepare_speech_generation(request, request_id=request_id)
                 return StreamingResponse(
                     self._generate_audio_chunks(

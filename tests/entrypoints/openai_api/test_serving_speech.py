@@ -16,6 +16,7 @@ from inspect import Signature, signature
 from pathlib import Path
 from types import SimpleNamespace
 
+import av
 import numpy as np
 import pytest
 import torch
@@ -2984,13 +2985,13 @@ class TestStreamingProtocolValidation:
 
     def test_stream_validation_errors(self):
         """The request schema validates formats; model-aware speed checks happen in serving."""
-        with pytest.raises(ValidationError, match="requires response_format='pcm' or 'wav'"):
+        with pytest.raises(ValidationError, match="requires response_format='pcm', 'wav', or 'opus'"):
             OpenAICreateSpeechRequest(input="Hello", stream=True, response_format="mp3")
         request = OpenAICreateSpeechRequest(input="Hello", stream=True, response_format="pcm", speed=2.0)
         assert request.speed == 2.0
 
     def test_stream_format_audio_validation_errors(self):
-        with pytest.raises(ValidationError, match="requires response_format='pcm' or 'wav'"):
+        with pytest.raises(ValidationError, match="requires response_format='pcm', 'wav', or 'opus'"):
             OpenAICreateSpeechRequest(input="Hello", stream_format="audio", response_format="mp3")
         request = OpenAICreateSpeechRequest(input="Hello", stream_format="audio", response_format="pcm", speed=2.0)
         assert request.speed == 2.0
@@ -3136,6 +3137,17 @@ class TestStreamingResponse:
         assert "text/event-stream" not in response.headers["content-type"]
         assert len(response.content) > 0
 
+    def test_raw_opus_streaming(self, streaming_app):
+        response = TestClient(streaming_app).post(
+            "/v1/audio/speech",
+            json={"input": "Hello", "stream_format": "audio", "response_format": "opus"},
+        )
+
+        assert response.status_code == 200
+        assert "audio/ogg" in response.headers["content-type"]
+        with av.open(io.BytesIO(response.content)) as container:
+            assert list(container.decode(audio=0))
+
     def test_raw_stream_passes_tts_params_to_common_guard(self, streaming_app, monkeypatch):
         """The raw route must not bypass the shared Qwen3-TTS EOS guard."""
         speech_server = streaming_app.state.speech_server
@@ -3182,6 +3194,23 @@ class TestStreamingResponse:
         )
 
         self._assert_sse_audio_response(response)
+
+    def test_sse_opus_streaming(self, streaming_app):
+        response = TestClient(streaming_app).post(
+            "/v1/audio/speech",
+            json={"input": "Hello", "stream_format": "sse", "response_format": "opus"},
+        )
+
+        assert response.status_code == 200
+        payloads = [
+            json.loads(line.removeprefix("data: ")) for line in response.text.splitlines() if line.startswith("data: ")
+        ]
+        deltas = [payload for payload in payloads if payload["type"] == "speech.audio.delta"]
+        assert deltas
+        assert all(payload["response_format"] == "opus" for payload in deltas)
+        encoded = b"".join(base64.b64decode(payload["audio"]) for payload in deltas)
+        with av.open(io.BytesIO(encoded)) as container:
+            assert list(container.decode(audio=0))
 
     def test_stream_true_with_stream_format_sse_uses_sse(self, streaming_app):
         """stream=True and stream_format=sse both select SSE streaming."""
