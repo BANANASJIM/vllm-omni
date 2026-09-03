@@ -1,5 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
+
 from __future__ import annotations
 
+import asyncio
 import queue
 from collections.abc import Callable
 from types import SimpleNamespace
@@ -629,6 +633,36 @@ async def test_async_omni_abort_forwards_to_engine(monkeypatch: pytest.MonkeyPat
     assert engine.aborted == [[req_id]]
     assert external_req_id not in app.request_states
     assert recorded_failures == [(req_id, "client_abort")]
+
+
+@pytest.mark.asyncio
+async def test_async_omni_abort_yields_terminal_from_final_stage(monkeypatch: pytest.MonkeyPatch):
+    request_added = asyncio.Event()
+    engine = FakeAsyncOmniEngine(
+        stage_metadata=[
+            _stage_meta(stage_type="llm", final_output=False, final_output_type=None),
+            _stage_meta(stage_type="llm", final_output=True, final_output_type="audio"),
+        ],
+        on_add_request=lambda *_: request_added.set(),
+    )
+    _patch_engine(monkeypatch, engine)
+    app = AsyncOmni("dummy-model")
+
+    async def collect_outputs():
+        return [output async for output in app.generate(prompt="hello", request_id="req-1")]
+
+    try:
+        generate_task = asyncio.create_task(collect_outputs())
+        await request_added.wait()
+        await app.abort("req-1")
+        outputs = await generate_task
+    finally:
+        app.shutdown()
+
+    assert len(outputs) == 1
+    assert outputs[0].stage_id == 1
+    assert outputs[0].final_output_type == "audio"
+    assert outputs[0].outputs[0].finish_reason == "abort"
 
 
 @pytest.mark.asyncio

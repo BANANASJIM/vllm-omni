@@ -71,6 +71,7 @@ def get_async_omni_instance(fake_add_request=_noop, fake_abort_request=_noop) ->
     omni.resolve_sampling_params_list = lambda params, allow_delta_coercion: params
     omni._compute_final_stage_id = lambda output_modalities: 0
     omni._compute_final_output_stage_ids = lambda output_modalities: [0]
+    omni._stage_meta_list = [SimpleNamespace(final_output_type="text")]
     omni._process_orchestrator_results = fake_process_results
     omni._log_summary_and_cleanup = lambda request_id: omni.request_states.pop(request_id, None)
     return omni
@@ -317,6 +318,8 @@ def test_abort_enqueues_synthetic_finished_when_engine_returns_empty():
             request_id="req-1-dddd",
             external_request_id="req-1",
             input_stream_task=None,
+            final_stage_id=0,
+            final_output_type="text",
             queue=queue,
         )
         await omni._abort(["req-1-dddd"])
