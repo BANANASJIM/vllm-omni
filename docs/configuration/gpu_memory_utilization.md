@@ -52,6 +52,10 @@ their requested budget at the available free memory and log a warning. Other
 platform workers may enforce a strict startup check. Diffusion stages in
 `dense_legacy` mode skip this calculation.
 
+Setting `kv_cache_memory_bytes` explicitly overrides automatic KV-cache sizing
+from `gpu_memory_utilization`. It does not bypass the startup memory checks
+described above; paged-scheduler diffusion still runs its profile warmup.
+
 ### Memory Components
 
 The total memory used by a stage includes:
