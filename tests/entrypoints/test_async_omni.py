@@ -13,6 +13,7 @@ from vllm.sampling_params import RequestOutputKind, SamplingParams
 from tests.helpers.mark import hardware_test
 from tests.helpers.stage_config import get_deploy_config_path
 from vllm_omni.engine.async_omni_engine import AsyncOmniEngine
+from vllm_omni.entrypoints import async_omni
 from vllm_omni.entrypoints.async_omni import AsyncOmni
 from vllm_omni.outputs import OmniRequestOutput
 
@@ -381,7 +382,8 @@ def test_generate_accepts_request_after_repeated_cancellations():
 
 @pytest.mark.cpu
 @pytest.mark.parametrize("has_chunk", [False, True])
-def test_streaming_input_terminal_submit_failure_reaches_generate(mocker, has_chunk):
+@pytest.mark.parametrize("input_fails", [False, True])
+def test_streaming_input_terminal_submit_failure_reaches_generate(mocker, has_chunk, input_fails):
     async def run_test():
         submissions: list[tuple[str, bool]] = []
 
@@ -406,10 +408,13 @@ def test_streaming_input_terminal_submit_failure_reaches_generate(mocker, has_ch
             "vllm_omni.entrypoints.async_omni.extract_prompt_components",
             return_value=(None, None, None),
         )
+        error_metadata = mocker.spy(async_omni, "client_error_metadata")
 
         async def input_stream():
             if has_chunk:
                 yield StreamingInput(prompt={"prompt": "chunk"})
+            if input_fails:
+                raise RuntimeError("streaming input failed")
 
         async def consume():
             async for _ in omni.generate(
@@ -420,8 +425,10 @@ def test_streaming_input_terminal_submit_failure_reaches_generate(mocker, has_ch
             ):
                 pass
 
-        with pytest.raises(RuntimeError, match="terminal streaming submit failed"):
+        expected_error = "streaming input failed" if input_fails else "terminal streaming submit failed"
+        with pytest.raises(RuntimeError, match=expected_error):
             await asyncio.wait_for(consume(), timeout=1.0)
+        assert error_metadata.call_count == 1
         assert submissions == ([("add", True), ("update", False)] if has_chunk else [("add", False)])
         assert omni.request_states == {}
 
