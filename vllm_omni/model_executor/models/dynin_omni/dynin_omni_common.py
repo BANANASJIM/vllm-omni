@@ -988,7 +988,8 @@ def get_dynin_config_resolver_attr(
     )
 
 
-def _get_dynin_magvit_attr(
+@_dynin_magvit_diffusers_compat()
+def get_dynin_magvit_attr(
     name: str,
     *,
     source: str | None = None,
@@ -1029,22 +1030,6 @@ def _get_dynin_magvit_attr(
     raise ImportError(
         f"Failed to resolve MAGVIT attr '{attr_name}' from source={resolved_source!r} (revision={resolved_revision!r})."
     )
-
-
-def get_dynin_magvit_attr(
-    name: str,
-    *,
-    source: str | None = None,
-    revision: str | None = None,
-    local_files_only: bool | None = None,
-) -> Any:
-    with _dynin_magvit_diffusers_compat():
-        return _get_dynin_magvit_attr(
-            name,
-            source=source,
-            revision=revision,
-            local_files_only=local_files_only,
-        )
 
 
 def build_dynin_chat_prompt(content: str) -> str:
