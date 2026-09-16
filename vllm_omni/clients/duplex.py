@@ -44,6 +44,8 @@ from uuid import uuid4
 
 import pybase64 as base64
 
+from vllm_omni.clients.duplex_trace import DuplexTrace
+
 __all__ = [
     "DUPLEX_FIRST_UNIT_MS",
     "DUPLEX_UNIT_MS",
@@ -621,6 +623,9 @@ class DuplexClient:
     new client requires the wire-level ``session.resume`` handshake
     (``resume_token``, ``incarnation``, ``last_received_server_event_seq``),
     which this client does not expose.
+
+    Pass a ``DuplexTrace`` as ``trace`` to retain bounded wire metadata for
+    offline diagnostics, including handshake and resume events.
     """
 
     def __init__(
@@ -634,7 +639,9 @@ class DuplexClient:
         heartbeat_interval_s: float | None = 30.0,
         handshake_timeout_s: float = 30.0,
         connect: ConnectFn | None = None,
+        trace: DuplexTrace | None = None,
     ) -> None:
+        self._trace = trace
         self.url = url
         self.model = model
         self.config = config or SessionConfig()
@@ -925,7 +932,7 @@ class DuplexClient:
         payload = dict(event)
         payload.setdefault("event_id", f"evt_{uuid4().hex}")
         try:
-            await self._ws.send(json.dumps(payload))
+            await self._send_on(self._ws, payload)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -933,6 +940,13 @@ class DuplexClient:
         return payload["event_id"]
 
     # -- internals ---------------------------------------------------------------
+
+    async def _send_on(self, ws: WebSocketTransport | None, payload: dict[str, object]) -> None:
+        if ws is None:
+            raise DuplexConnectionError("not connected")
+        await ws.send(json.dumps(payload))
+        if self._trace is not None:
+            self._trace.record("send", payload)
 
     def _target_url(self) -> str:
         parts = urlsplit(self.url)
@@ -1025,6 +1039,8 @@ class DuplexClient:
                     except json.JSONDecodeError:
                         continue
                     if isinstance(data, dict):
+                        if self._trace is not None:
+                            self._trace.record("receive", data)
                         await self._dispatch(data)
             except asyncio.CancelledError:
                 raise
@@ -1118,7 +1134,7 @@ class DuplexClient:
 
         if isinstance(seq, int) and not self._closed.is_set():
             try:
-                await self._ws.send(json.dumps({"type": "session.event_ack", "server_event_seq": seq}))
+                await self._send_on(self._ws, {"type": "session.event_ack", "server_event_seq": seq})
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -1137,16 +1153,15 @@ class DuplexClient:
             except Exception:
                 continue
             try:
-                await ws.send(
-                    json.dumps(
-                        {
-                            "type": "session.resume",
-                            "session_id": self.session_id,
-                            "incarnation": self.incarnation,
-                            "resume_token": self.resume_token,
-                            "last_received_server_event_seq": self._last_server_event_seq or 0,
-                        }
-                    )
+                await self._send_on(
+                    ws,
+                    {
+                        "type": "session.resume",
+                        "session_id": self.session_id,
+                        "incarnation": self.incarnation,
+                        "resume_token": self.resume_token,
+                        "last_received_server_event_seq": self._last_server_event_seq or 0,
+                    },
                 )
                 deadline = time.monotonic() + self._handshake_timeout_s
                 pending: list[dict[str, object]] = []
@@ -1160,6 +1175,8 @@ class DuplexClient:
                     data = json.loads(raw)
                     if not isinstance(data, dict):
                         continue
+                    if self._trace is not None:
+                        self._trace.record("receive", data)
                     event_type = data.get("type")
                     if event_type == "session.resumed":
                         self._ws = ws
