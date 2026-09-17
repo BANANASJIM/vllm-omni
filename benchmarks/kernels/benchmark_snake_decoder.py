@@ -103,6 +103,7 @@ def main():
                 samples[name].append(
                     triton.testing.do_bench_cudagraph(lambda: candidate(mel), rep=200, return_mode="median")
                 )
+        assert SnakeBeta._triton_kernel and baseline.SnakeBeta._triton_kernel, "Snake Triton fallback occurred"
         medians = {key: statistics.median(values) for key, values in samples.items()}
         print(
             json.dumps(
