@@ -46,27 +46,25 @@ class DuplexTrace:
             value = event.get(key)
             if isinstance(value, str) and len(value) <= 256:
                 row[key] = value
-        for key in ("server_event_seq", "incarnation", "played_ms", "sample_rate_hz"):
+        for key in ("server_event_seq", "played_ms", "sample_rate_hz"):
             value = event.get(key)
             if type(value) is int or (type(value) is float and math.isfinite(value)):
                 row[key] = value
-        response = event.get("response")
-        if isinstance(response, dict):
-            for source, target in (("id", "response_id"), ("status", "response_status")):
-                value = response.get(source)
-                if isinstance(value, str) and len(value) <= 256:
-                    row.setdefault(target, value)
+        for key, fields in (
+            ("response", (("id", "response_id"), ("status", "response_status"))),
+            ("error", (("code", "error_code"), ("event_id", "related_event_id"))),
+        ):
+            nested = event.get(key)
+            if isinstance(nested, dict):
+                for source, target in fields:
+                    value = nested.get(source)
+                    if isinstance(value, str) and len(value) <= 256:
+                        row.setdefault(target, value)
         session = event.get("session")
         if isinstance(session, dict):
             value = session.get("id") or session.get("session_id")
             if isinstance(value, str) and len(value) <= 256:
                 row.setdefault("session_id", value)
-        error = event.get("error")
-        if isinstance(error, dict):
-            for source, target in (("code", "error_code"), ("event_id", "related_event_id")):
-                value = error.get(source)
-                if isinstance(value, str) and len(value) <= 256:
-                    row[target] = value
         self._events.append(row)
         self._total_events += 1
 
@@ -80,25 +78,21 @@ class DuplexTrace:
         counts = Counter(f"{row['direction']}:{row.get('type', 'unknown')}" for row in events)
         responses: dict[str, dict[str, object]] = {}
         milestones = {
-            ("receive", "response.created"): "created_s",
-            ("receive", "response.output_audio.delta"): "first_audio_s",
-            ("receive", "response.done"): "done_s",
-            ("send", "response.cancel"): "cancel_sent_s",
+            "receive:response.created": "created_s",
+            "receive:response.output_audio.delta": "first_audio_s",
+            "receive:response.done": "done_s",
+            "send:response.cancel": "cancel_sent_s",
         }
         for row in events:
             response_id = row.get("response_id")
             if not isinstance(response_id, str):
                 continue
             response = responses.setdefault(response_id, {"response_id": response_id})
-            direction, event_type = row["direction"], row.get("type")
-            if not isinstance(direction, str) or not isinstance(event_type, str):
-                continue
-            milestone = milestones.get((direction, event_type))
+            milestone = milestones.get(f"{row['direction']}:{row.get('type')}")
             if milestone is not None:
                 response.setdefault(milestone, row["elapsed_s"])
-            if row["direction"] == "receive" and row.get("type") == "response.done":
-                if "response_status" in row:
-                    response.setdefault("status", row["response_status"])
+            if milestone == "done_s" and "response_status" in row:
+                response.setdefault("status", row["response_status"])
         return {
             "schema_version": 1,
             "clock": "client_monotonic",

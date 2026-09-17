@@ -48,6 +48,7 @@ def test_trace_omits_payloads_and_credentials(tmp_path, monkeypatch):
     assert data["schema_version"] == 1
     assert data["events"][0]["session_id"] == "s1"
     assert data["events"][1]["sample_rate_hz"] == 24000
+    assert data["events"][2]["error_code"] == "invalid_request"
     assert data["events"][2]["related_event_id"] == "e1"
     assert data["event_counts"]["receive:error"] == 1
     assert data["responses"] == [{"response_id": "r1", "first_audio_s": 0.0}]
@@ -102,11 +103,11 @@ def test_trace_rejects_invalid_capacity(capacity):
 
 def test_trace_bounds_strings_and_omits_nonfinite_metadata():
     trace = DuplexTrace()
-    trace.record("receive", {"type": "x" * 1000, "played_ms": float("nan"), "incarnation": False})
+    trace.record("receive", {"type": "x" * 1000, "played_ms": float("nan"), "server_event_seq": False})
     row = trace.snapshot()["events"][0]
     assert "type" not in row
     assert "played_ms" not in row
-    assert "incarnation" not in row
+    assert "server_event_seq" not in row
 
 
 def test_trace_write_error_is_visible(tmp_path):
