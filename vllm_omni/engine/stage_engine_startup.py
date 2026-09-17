@@ -17,6 +17,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import msgspec
+import torch
 import zmq
 from omegaconf import OmegaConf
 from vllm.config import VllmConfig
@@ -33,6 +34,7 @@ from vllm.v1.engine.utils import (
 )
 from vllm.v1.executor import Executor
 
+from vllm_omni.config.omni_config import BaseVllmOmniStageConfig
 from vllm_omni.distributed.omni_connectors.utils import initialization
 from vllm_omni.engine import stage_init_utils
 from vllm_omni.engine.stage_init_utils import (
@@ -67,11 +69,13 @@ def _serialize_stage_config(stage_config: Any) -> Any:
     """Convert a stage config to msgpack-friendly builtins."""
     if stage_config is None or isinstance(stage_config, (str, bytes, int, float, bool)):
         return stage_config
+    if isinstance(stage_config, torch.dtype):
+        return str(stage_config).removeprefix("torch.")
 
     if OmegaConf.is_config(stage_config):
         return _serialize_stage_config(OmegaConf.to_container(stage_config, resolve=True))
 
-    if dataclasses.is_dataclass(stage_config):
+    if dataclasses.is_dataclass(stage_config) and not isinstance(stage_config, type):
         return _serialize_stage_config(dataclasses.asdict(stage_config))
 
     if isinstance(stage_config, dict):
@@ -974,6 +978,7 @@ def _launch_omni_core_engines(
     omni_coordinator_address: str | None = None,
     stage_visible_devices: str | None = None,
     spawn_device_lock: threading.Lock | None = None,
+    omni_parallel_stage_init: bool = False,
 ) -> Iterator[tuple[CoreEngineProcManager, DPCoordinator | None, EngineZmqAddresses]]:
     """Launch local engine cores using the omni registration flow.
 
@@ -1068,8 +1073,20 @@ def _launch_omni_core_engines(
                         omni_stage_id=stage_id,
                         omni_coordinator_address=omni_coordinator_address,
                         omni_replica_base_id=replica_id,
+                        omni_parallel_stage_init=omni_parallel_stage_init,
                     )
             else:
+                if omni_parallel_stage_init:
+                    # The upstream CoreEngineProcManager targets EngineCoreProc.run_engine_core,
+                    # which does NOT install the SH/EX phase-lock executor wrapper. Since the
+                    # orchestrator skips its own device lock when parallel_stage_init is on,
+                    # running here would leave same-device init unguarded. Fail closed.
+                    raise RuntimeError(
+                        f"parallel_stage_init is enabled but stage {stage_id} would launch via the "
+                        "upstream CoreEngineProcManager (no omni coordinator), which cannot install "
+                        "the phase-lock guard. Disable parallel_stage_init for this deployment or "
+                        "run with the omni coordinator."
+                    )
                 with scoped_spawn_device_env(
                     stage_visible_devices, spawn_device_lock, stage_id=stage_id, replica_id=replica_id
                 ):
@@ -1120,6 +1137,7 @@ def launch_stage_replica(
     omni_coordinator_address: str | None = None,
     stage_visible_devices: str | None = None,
     spawn_device_lock: threading.Lock | None = None,
+    omni_parallel_stage_init: bool = False,
 ) -> Iterator[StageReplicaResources]:
     """Launch a local LLM stage replica.
 
@@ -1141,6 +1159,7 @@ def launch_stage_replica(
             omni_coordinator_address=omni_coordinator_address,
             stage_visible_devices=stage_visible_devices,
             spawn_device_lock=spawn_device_lock,
+            omni_parallel_stage_init=omni_parallel_stage_init,
         ) as resources:
             engine_manager, coordinator, addresses = resources
             yield StageReplicaResources(
@@ -1170,6 +1189,7 @@ def launch_stage_replica(
             omni_stage_id=stage_id,
             omni_coordinator_address=omni_coordinator_address,
             omni_replica_base_id=replica_id,
+            omni_parallel_stage_init=omni_parallel_stage_init,
         )
 
     with zmq_socket_ctx(handshake_address, zmq.ROUTER, bind=True) as handshake_socket:
@@ -1387,7 +1407,7 @@ def get_headless_replica_devices(
     omni_dp_size_local: int,
 ) -> list[str | None]:
     """Return per-replica device slices for a headless stage."""
-    runtime_cfg = getattr(stage_cfg, "runtime", None)
+    runtime_cfg = getattr(stage_cfg, "runtime_config", getattr(stage_cfg, "runtime", None))
     devices_str: str | None = None
     if runtime_cfg is not None:
         devices_str = (
@@ -1493,10 +1513,11 @@ def launch_headless_diffusion_replicas(
         stage_id,
     )
 
-    # Headless diffusion startup and its downstream helpers still consume the
-    # legacy StageConfig shape; switch this with the coordinated RFC #4021
-    # stage-init cutover.
-    metadata = stage_init_utils.extract_legacy_stage_metadata(stage_cfg)
+    metadata = (
+        stage_init_utils.extract_stage_metadata_from_omni_stage_config(stage_cfg)
+        if isinstance(stage_cfg, BaseVllmOmniStageConfig)
+        else stage_init_utils.extract_legacy_stage_metadata(stage_cfg)
+    )
     if omni_conn_cfg:
         inject_omni_kv_config(stage_cfg, omni_conn_cfg, omni_from, omni_to)
     # Headless single-stage launch must still infer cross-stage TP topology
