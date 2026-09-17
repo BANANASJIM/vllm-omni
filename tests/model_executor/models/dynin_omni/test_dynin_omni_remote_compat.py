@@ -213,7 +213,7 @@ def test_magvit_remote_import_downloads_repo_id_snapshot_at_revision(
         download_calls.append(kwargs)
         return str(snapshot.resolve())
 
-    monkeypatch.setattr(dynin_omni_common, "snapshot_download", snapshot_download)
+    monkeypatch.setattr(dynin_omni_common.hf_api(), "snapshot_download", snapshot_download)
 
     model_class = _get_magvit(repo_id, revision=revision)
 
