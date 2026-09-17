@@ -16,8 +16,9 @@ from typing import Literal
 class DuplexTrace:
     """Record client-observed wire events without retaining media or text.
 
-    Attach one instance to one ``DuplexClient``. Recording does no file I/O;
-    call :meth:`write_json` after the session, or from a worker thread.
+    Attach one instance to one ``DuplexClient``. Recording does no file I/O.
+    Call :meth:`write_json` after recording has stopped. If offloading export
+    to a worker thread, do not record concurrently: snapshots are not thread-safe.
     The oldest records are dropped when ``max_events`` is reached.
     """
 
@@ -57,7 +58,7 @@ class DuplexTrace:
                     row.setdefault(target, value)
         session = event.get("session")
         if isinstance(session, dict):
-            value = session.get("session_id")
+            value = session.get("id") or session.get("session_id")
             if isinstance(value, str) and len(value) <= 256:
                 row.setdefault("session_id", value)
         error = event.get("error")

@@ -18,7 +18,7 @@ def test_trace_omits_payloads_and_credentials(tmp_path, monkeypatch):
         "send",
         {
             "type": "session.update",
-            "session": {"session_id": "s1", "instructions": "SECRET", "ref_audio": "SECRET"},
+            "session": {"id": "s1", "instructions": "SECRET", "ref_audio": "SECRET"},
             "resume_token": "SECRET",
         },
     )
