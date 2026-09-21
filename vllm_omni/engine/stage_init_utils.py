@@ -1189,6 +1189,8 @@ def _project_omni_stage_engine_args(
     engine_args["async_chunk"] = connector_config.async_chunk
     if connector_config.omni_kv_config is not None:
         engine_args["omni_kv_config"] = copy.deepcopy(connector_config.omni_kv_config)
+    if connector_config.kv_transfer_config is not None:
+        engine_args["kv_transfer_config"] = copy.deepcopy(connector_config.kv_transfer_config)
 
     if is_diffusion:
         engine_args["parallel_config"] = _project_omni_config_fields(
@@ -1475,6 +1477,8 @@ def build_vllm_config(
     stage_connector_spec: dict[str, Any] | None = None,
     engine_args_dict: dict[str, Any] | None = None,
     headless: bool = False,
+    api_process_count: int = 1,
+    api_process_rank: int = 0,
 ) -> tuple[Any, type]:
     """Build engine args, then create VllmConfig and executor_class.
 
@@ -1491,6 +1495,9 @@ def build_vllm_config(
         )
 
     filtered_engine_args_dict = filter_dataclass_kwargs(OmniEngineArgs, engine_args_dict)
+    if api_process_count != 1 or api_process_rank != 0:
+        filtered_engine_args_dict["_api_process_count"] = api_process_count
+        filtered_engine_args_dict["_api_process_rank"] = api_process_rank
 
     # _to_dict serializes dataclass fields (e.g. StructuredOutputsConfig) into
     # plain dicts.  When OmniEngineArgs is instantiated with the dict, these
@@ -1747,6 +1754,7 @@ def acquire_device_locks(
     stage_id: int,
     engine_args_dict: dict[str, Any],
     stage_init_timeout: int,
+    locked_devices: set[int] | None = None,
 ) -> list[int]:
     """Acquire exclusive file locks on devices needed by this stage.
 
@@ -1801,8 +1809,7 @@ def acquire_device_locks(
                 f"but only {len(physical_devices)} device(s) are available: {physical_devices}"
             )
 
-        num_devices_to_lock = num_devices_per_stage
-        devices_to_lock = sorted(physical_devices[:num_devices_to_lock])
+        devices_to_lock = sorted(set(physical_devices[:num_devices_per_stage]) - (locked_devices or set()))
 
         logger.debug(
             "Parallel config: TP=%d, PP=%d, DP=%d, PCP=%d, SP=%d, CFG=%d; will lock %d devices: %s",
@@ -1812,7 +1819,7 @@ def acquire_device_locks(
             prefill_context_parallel_size,
             sequence_parallel_size,
             cfg_parallel_size,
-            num_devices_to_lock,
+            len(devices_to_lock),
             devices_to_lock,
         )
 
@@ -1830,6 +1837,8 @@ def acquire_device_locks(
                         record_lock_holder_pid(lock_fd, lock_writable)
                         lock_acquired = True
                         lock_fds.append(lock_fd)
+                        if locked_devices is not None:
+                            locked_devices.add(device_id)
                         logger.debug("Acquired exclusive lock for device %s", device_id)
                     except BlockingIOError:
                         os.close(lock_fd)
@@ -1958,13 +1967,25 @@ def build_diffusion_config(
     metadata: StageMetadata,
 ) -> Any:
     """Build diffusion config for a stage."""
+    from vllm_omni.config.omni_config import extract_diffusion_stage_config_kwargs
 
     engine_args_dict = (
         build_engine_args_dict_from_omni_stage_config(stage_cfg, model)
         if isinstance(stage_cfg, BaseVllmOmniStageConfig)
         else build_engine_args_dict(stage_cfg, model)
     )
-    od_config = OmniDiffusionConfig.from_kwargs(**engine_args_dict)
+    stage_id = engine_args_dict.get("stage_id", metadata.stage_id)
+    diffusion_kwargs = extract_diffusion_stage_config_kwargs(
+        engine_args_dict,
+        stage_id=stage_id,
+        include_engine_adapter_metadata=True,
+    )
+    od_config = OmniDiffusionConfig(**{name: value for name, value in diffusion_kwargs.items() if value is not None})
+
+    for dimension in ("height", "width"):
+        value = getattr(metadata.default_sampling_params, dimension, None)
+        if isinstance(value, int) and value > 0:
+            od_config.additional_config.setdefault(f"diffusion_kv_profile_{dimension}", value)
 
     num_devices_per_stage = od_config.parallel_config.world_size
     device_control_env = current_omni_platform.device_control_env_var
