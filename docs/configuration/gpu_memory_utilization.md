@@ -53,8 +53,11 @@ platform workers may enforce a strict startup check. Diffusion stages in
 `dense_legacy` mode skip this calculation.
 
 Setting `kv_cache_memory_bytes` explicitly overrides automatic KV-cache sizing
-from `gpu_memory_utilization`. It does not bypass the startup memory checks
-described above; paged-scheduler diffusion still runs its profile warmup.
+from `gpu_memory_utilization` and skips automatic memory profiling used to
+derive the cache capacity. Paged-scheduler diffusion still calls `profile_run`
+to warm up lazy kernels and communication buffers, but does not measure that
+run to calculate the cache budget. The startup memory checks described above
+still apply because they run before cache sizing.
 
 ### Memory Components
 
@@ -97,6 +100,27 @@ AR stage memory commonly includes:
 - Large model weights
 - KV cache for attention
 - Activation buffers
+
+#### For Non-Autoregressive (NAR) Stages
+
+Non-diffusion NAR stages use the stage's resolved engine configuration. Omitting
+`gpu_memory_utilization` from an override keeps the value from the model's
+deployment configuration, if present. For example, the Qwen3-Omni-MoE Code2Wav
+stage sets `0.1`. If no value is configured, the stage inherits vLLM's
+`CacheConfig` default (`0.92` in vLLM 0.28.0); there is no separate NAR default.
+Check the installed vLLM version and deployment configuration when tuning it.
+
+The effect depends on the model's attention implementation:
+
+- If the stage exposes KV-cache specifications through vLLM's attention and
+  cache manager, the budget sizes that cache, as for an AR stage. Account for
+  it when sharing a GPU with other stages.
+- If the stage does not expose a KV cache, as with Qwen3-Omni Code2Wav, the
+  engine skips KV-cache memory profiling and allocation. This includes
+  attention implementations that do not use vLLM-managed KV cache. GPU worker
+  initialization still calculates the requested budget, but weights,
+  activations, workspaces, and graph pools determine actual usage. Measure
+  representative peak usage instead of lowering this value to try to cap it.
 
 #### For Diffusion Stages
 
@@ -177,10 +201,13 @@ stages:
     gpu_memory_utilization: 0.1
 ```
 
-**Note:** These values are stage inputs, not reservations of 48GB, 24GB, and
-8GB. Do not add them to predict physical usage or treat them as hard device
-quotas. The Code2Wav stage does not expose a KV cache, so its value does not
-create an 8GB cache or reservation.
+**Note:** Keep the sum of automatically KV-cache-sized stage budgets below
+`1.0` per device, and leave room for other stages and runtime growth. Here the
+Thinker and Talker budgets sum to `0.9` on GPU 1. On GPU 0, the Thinker budget
+is `0.6`; also allow for the measured Code2Wav peak. Code2Wav does not expose a
+KV cache, so its `0.1` does not create an 8GB cache or reservation. These values
+guide cache sizing; they do not predict total physical usage or enforce hard
+device quotas.
 
 ## Troubleshooting
 
