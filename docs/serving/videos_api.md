@@ -237,13 +237,22 @@ At least one mask is required. A nontrivial `video_noise_mask` requires
 `source_audio` or a `source_video` with an audio stream. Mask values are in
 `[0, 1]`: `0` preserves the source, `1` regenerates it, and fractional values
 blend the two behaviors. Exact all-one masks are no-ops and do not require a
-source. Source uploads without a mask are rejected. Masks may be a JSON scalar
-or arrays matching the H3 latent/token grid; pixel-resolution masks must be
-resized or pooled by the client before upload.
+source. Source uploads without a mask are rejected. Masks may be a JSON scalar,
+an array matching the H3 latent/token grid, or (video only) a frame-space
+array that the server resizes to the latent grid.
 
 For an aligned output of `F` frames at `W x H`, the video latent grid is
 `[Tv, H/16, W/16]`, where `Tv = 2 + 5 * ((F - 5) / 17)`. The video mask may be
-a scalar, a flat token vector, `[Tv, H/32, W/32]`, or the full latent grid. For
+a scalar, a flat token vector, `[Tv, H/32, W/32]`, the full latent grid, a
+spatial `[h, w]` mask applied to every frame, or a frame-space `[T, h, w]` mask
+with one slice per 24 fps output frame. A shape that matches the token or full
+latent grid is always read as that grid. Frame-space masks are area-resized to
+`[H/16, W/16]`; along time, a mask shorter than `F` is padded with its last
+slice (as the source video is) and a longer one is truncated, then each latent
+takes the maximum over the frames the causal video VAE folds into it, so any
+regenerated frame regenerates its latent. Because the 8 MiB limit below applies
+to the JSON file, clients should area-downsample frame-space masks by 16
+spatially before upload. For
 the model input, timestep, and velocity, a full-grid mask is max-pooled over
 each 2x2 spatial token and fractional values are rounded upward to 1/256
 levels. The final x0 restore uses the original, unquantized mask, so full-grid
@@ -334,6 +343,13 @@ but retain more frames on the accelerator and delay encoding. The VAE decode
 window and output frame count stay unchanged. Wan S2V keeps its existing
 per-clip behavior by default. Zero, negative, fractional, boolean, string, and
 null values are rejected when pre-encoding is enabled.
+
+The transfer ring applies backpressure before another D2H copy when both of
+its two slots are occupied or the combined pending uint8 payload would exceed
+256 MiB. This byte bound keeps large resolutions and uneven final chunks from
+turning a fixed item count into unexpectedly large memory growth. A native VAE
+chunk larger than 256 MiB is admitted only when the ring is otherwise empty,
+so supported chunk shapes cannot deadlock.
 
 `preencode_mp4` applies to the complete-MP4 response paths only. The
 `/v1/realtime/video` WebSocket endpoint rejects it, because that path already

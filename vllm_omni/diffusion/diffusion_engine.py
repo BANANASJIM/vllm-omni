@@ -44,7 +44,11 @@ from vllm_omni.diffusion.io_support import (
     supports_audio_output,
     supports_multimodal_input,
 )
-from vllm_omni.diffusion.offloader.config import any_selected_component_uses_allgather
+from vllm_omni.diffusion.offloader.config import (
+    OffloadStrategy,
+    any_selected_component_uses_allgather,
+    resolve_offload_strategy,
+)
 from vllm_omni.diffusion.output_formatter import (
     format_diffusion_outputs,
     format_empty_diffusion_outputs,
@@ -573,7 +577,8 @@ class DiffusionEngine:
         if output.media is not None:
             if output.output is not None:
                 raise ValueError("DiffusionOutput cannot contain both media and legacy output")
-            media = output.media.to_cpu() if self.od_config.enable_cpu_offload else output.media
+            model_level = resolve_offload_strategy(self.od_config) is OffloadStrategy.MODEL_LEVEL
+            media = output.media.to_cpu() if model_level else output.media
             output_data = media.video.tensor
             outputs = finalize_diffusion_media(media, sampling_params=request.sampling_params)
         else:
@@ -585,7 +590,7 @@ class DiffusionEngine:
             # post-processing to avoid device OOM — model weights may still
             # reside on the device and leave no headroom for intermediates.
             output_data = output.output
-            if self.od_config.enable_cpu_offload:
+            if resolve_offload_strategy(self.od_config) is OffloadStrategy.MODEL_LEVEL:
                 output_data = _move_tensor_tree_to_cpu(output_data)
 
             if self.post_process_func is not None:
@@ -664,8 +669,10 @@ class DiffusionEngine:
                 self._poll_native_kv()
                 worker_execution_completed = True
             except Exception as exc:
+                # Shutdown can interrupt an in-flight executor call. Exit through
+                # the loop tail so pending RPCs are failed instead of left waiting.
                 if self._closed:
-                    return
+                    break
                 worker_execution_completed = False
                 logger.error(
                     "Execution failed for diffusion requests %s", sched_output.scheduled_request_ids, exc_info=True
@@ -1563,6 +1570,10 @@ class DiffusionEngine:
         closed_output = DiffusionOutput(error="DiffusionEngine is closed.")
         for stream in pending_streams:
             self._put_queue_output(stream, closed_output)
+
+        # Interrupt remote inference before waiting for the thread blocked on Ray.
+        if self.od_config.distributed_executor_backend == "ray":
+            self.executor.shutdown()
 
         worker_thread = self.worker_thread
         if worker_thread is not None:
