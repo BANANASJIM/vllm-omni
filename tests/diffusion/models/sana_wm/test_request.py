@@ -93,6 +93,34 @@ def test_native_params_rejects_zero_num_inference_steps(sampling_params):
         SanaWmPipeline.__new__(SanaWmPipeline)._native_params(payload, sampling_params)
 
 
+@pytest.mark.parametrize("field", ["height", "width"])
+def test_native_params_rejects_zero_resolution(field):
+    payload = {
+        "height": SANA_WM_DEFAULT_HEIGHT,
+        "width": SANA_WM_DEFAULT_WIDTH,
+        "num_frames": SANA_WM_DEFAULT_NUM_FRAMES,
+    }
+    sampling_params = OmniDiffusionSamplingParams(**{field: 0})
+
+    with pytest.raises(ValueError, match="must be positive"):
+        SanaWmPipeline.__new__(SanaWmPipeline)._native_params(payload, sampling_params)
+
+
+@pytest.mark.parametrize("resolution", [None, 256])
+def test_native_params_resolves_resolution(resolution):
+    payload = {
+        "height": SANA_WM_DEFAULT_HEIGHT,
+        "width": SANA_WM_DEFAULT_WIDTH,
+        "num_frames": SANA_WM_DEFAULT_NUM_FRAMES,
+    }
+    sampling_params = OmniDiffusionSamplingParams(height=resolution, width=resolution)
+
+    params = SanaWmPipeline.__new__(SanaWmPipeline)._native_params(payload, sampling_params)
+
+    assert params.height == (payload["height"] if resolution is None else resolution)
+    assert params.width == (payload["width"] if resolution is None else resolution)
+
+
 @pytest.mark.parametrize("num_frames", [9, 33, 161])
 def test_accepts_aligned_geometry(num_frames):
     payload = normalize_sana_wm_payload(_prompt(num_frames=num_frames))["additional_information"]["sana_wm"]

@@ -336,8 +336,14 @@ class SanaWmPipeline(
 
     def _native_params(self, payload: dict[str, Any], sampling_params: Any | None) -> SanaWmNativeParams:
         extra_args = self._extra_args(sampling_params)
-        height = int(getattr(sampling_params, "height", None) or payload["height"])
-        width = int(getattr(sampling_params, "width", None) or payload["width"])
+        height = getattr(sampling_params, "height", None)
+        if height is None:
+            height = payload["height"]
+        height = int(height)
+        width = getattr(sampling_params, "width", None)
+        if width is None:
+            width = payload["width"]
+        width = int(width)
         num_frames = int(getattr(sampling_params, "num_frames", None) or payload["num_frames"])
         steps = getattr(sampling_params, "num_inference_steps", None)
         if steps is None:
