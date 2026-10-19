@@ -118,10 +118,9 @@ class MiniMaxH3Qwen3VLVocabParallelEmbedding(nn.Module):
         start_idx = self._tp_rank * self.num_embeddings_per_partition
         end_idx = start_idx + self.num_embeddings_per_partition
         input_mask = (input_ < start_idx) | (input_ >= end_idx)
-        masked_input = input_.clone() - start_idx
-        masked_input[input_mask] = 0
+        masked_input = torch.where(input_mask, torch.zeros_like(input_), input_ - start_idx)
         output = F.embedding(masked_input, self.weight)
-        output[input_mask, :] = 0.0
+        output = output.masked_fill(input_mask.unsqueeze(-1), 0.0)
         self.group.all_reduce(output)
         return output
 
@@ -448,9 +447,14 @@ class MiniMaxH3Qwen3VLTextRotaryEmbedding(nn.Module):
         inv_freq = 1.0 / (self.base ** (torch.arange(0, self.dim, 2, dtype=torch.int64).float() / self.dim))
         return inv_freq.to(device)
 
-    def forward(self, x: torch.Tensor, position_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self, x: torch.Tensor, position_ids: torch.Tensor, *, inv_freq: torch.Tensor | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         # position_ids: (3, 1, seq)
-        inv_freq = self._get_inv_freq(position_ids.device)
+        if inv_freq is None:
+            inv_freq = self._get_inv_freq(position_ids.device)
+        elif inv_freq.dtype != torch.float32 or inv_freq.device != position_ids.device:
+            raise ValueError("prepared rotary inverse frequencies must be float32 on the positions device")
         inv_freq_expanded = inv_freq[None, None, :, None].float().expand(3, position_ids.shape[1], -1, 1)
         position_ids_expanded = position_ids[:, :, None, :].float()
         freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(2, 3)
@@ -975,9 +979,10 @@ class MiniMaxH3Qwen3VLTextModel(nn.Module):
         *,
         visual_pos_masks: torch.Tensor | None = None,
         deepstack_visual_embeds: list[torch.Tensor] | None = None,
+        rotary_inv_freq: torch.Tensor | None = None,
     ) -> torch.Tensor:
         hidden_states = inputs_embeds
-        position_embeddings = self.rotary_emb(hidden_states, positions)
+        position_embeddings = self.rotary_emb(hidden_states, positions, inv_freq=rotary_inv_freq)
         for layer_idx, decoder_layer in enumerate(self.layers):
             hidden_states = decoder_layer(hidden_states, position_embeddings=position_embeddings)
             if deepstack_visual_embeds is not None and layer_idx in range(len(deepstack_visual_embeds)):
@@ -1274,55 +1279,6 @@ class MiniMaxH3Qwen3VLEncoder(nn.Module):
             torch.accelerator.empty_cache()
         else:
             cache.release_if_needed()
-
-    def enable_omni_layerwise_offload(self, *, pin_memory: bool = True) -> None:
-        """Stream the TP-local Qwen vision/text blocks for low-HBM serving.
-
-        The encoder has its own TP process group, so these blocks must remain
-        rank-local.  Reusing the DiT AllGather group would concatenate
-        different TP shards and corrupt the encoder weights.
-        """
-        if not self.is_loaded or getattr(self, "_omni_layerwise_enabled", False):
-            return
-
-        from vllm_omni.diffusion.offloader.layerwise_backend import apply_block_hook
-        from vllm_omni.platforms import current_omni_platform
-
-        self._omni_layerwise_hooks = []
-        self._omni_layerwise_block_groups = []
-        copy_stream = current_omni_platform.Stream()
-        for blocks in (self.vision.blocks, self.text_model.layers):
-            if len(blocks) <= 1:
-                continue
-            last_hook = apply_block_hook(
-                blocks[-1],
-                blocks[0],
-                self.device_target,
-                copy_stream,
-                pin_memory,
-            )
-            hooks = [last_hook]
-            for index, block in enumerate(blocks[:-1]):
-                hooks.append(
-                    apply_block_hook(
-                        block,
-                        blocks[index + 1],
-                        self.device_target,
-                        copy_stream,
-                        pin_memory,
-                    )
-                )
-            for index, hook in enumerate(hooks):
-                hook._prev_hook = hooks[index - 1]
-            self._omni_layerwise_hooks.extend(hooks)
-            self._omni_layerwise_block_groups.append(blocks)
-
-        self._omni_layerwise_enabled = bool(self._omni_layerwise_hooks)
-        logger.info(
-            "MiniMax H3 encoder layerwise offload enabled on %d blocks across %d stacks",
-            sum(len(blocks) for blocks in self._omni_layerwise_block_groups),
-            len(self._omni_layerwise_block_groups),
-        )
 
     def _encode(
         self,
